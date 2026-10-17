@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>أداة التضمين — اتساق</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Readex+Pro:wght@300;400;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+  <a class="brand" href="index.html" aria-label="اتساق"><span class="moon" aria-hidden="true"></span><b>أداة التضمين</b></a>
+  <p class="tagline">إضافة الأعمال والحلقات. المسودة تُحفظ في متصفحك، ثم تُصدَّر وتُرفع.</p>
+</div></header>
+
+<main><div class="wrap" id="app"></div></main>
+
+<script src="common.js"></script>
+<script>
+(function () {
+  'use strict';
+  var I = window.Ittisaq, el = I.el, store = I.store;
+  var app = document.getElementById('app');
+  var lib = null, selShow = null, editEp = null, dirty = false;
+  var statusEl = el('div', { class: 'status', role: 'status' }, 'جاهز.');
+
+  function say(t, bad) { statusEl.textContent = t; statusEl.style.borderColor = bad ? 'var(--danger)' : 'var(--accent)'; }
+  function save() { store.set('draft', lib); dirty = false; }
+  function uid() { return 's' + Date.now().toString(36) + Math.floor(Math.random() * 1296).toString(36); }
+  function today() { return new Date().toISOString().slice(0, 10); }
+  function cur() { return lib.shows.filter(function (s) { return s.id === selShow; })[0]; }
+
+  /* ---------- التحميل ---------- */
+  var draft = I.loadDraft();
+  if (draft) { lib = draft; build(); say('تم تحميل مسودتك المحفوظة في هذا المتصفح.'); }
+  else {
+    I.loadPublished().then(function (l) { lib = I.normalize(l); save(); build(); say('تم التحميل من المكتبة المنشورة.'); })
+     .catch(function () { lib = I.normalize({}); save(); build(); say('لم أجد library.json منشوراً، بدأت بمكتبة فارغة.'); });
+  }
+
+  /* ---------- البناء ---------- */
+  function build() {
+    app.textContent = '';
+    app.appendChild(libPanel());
+    app.appendChild(showsPanel());
+    if (cur()) app.appendChild(epsPanel(cur()));
+    app.appendChild(statusEl);
+  }
+
+  /* ----- المكتبة: تصدير واستيراد ----- */
+  function libPanel() {
+    var n = lib.shows.length, e = lib.shows.reduce(function (a, s) { return a + s.episodes.length; }, 0);
+    var file = el('input', { type: 'file', accept: 'application/json,.json', class: 'sr', id: 'imp' });
+    file.addEventListener('change', function () {
+      var f = file.files[0]; if (!f) return;
+      var r = new FileReader();
+      r.onload = function () {
+        try {
+          var d = JSON.parse(r.result);
+          if (!d || !Array.isArray(d.shows)) throw new Error('bad');
+          if (!confirm('سيحلّ هذا الملف محل مسودتك الحالية. متأكد؟')) return;
+          lib = I.normalize(d); selShow = null; editEp = null; save(); build(); say('تم الاستيراد.');
+        } catch (x) { say('الملف ليس مكتبة صالحة.', true); }
+      };
+      r.readAsText(f);
+    });
+    return el('section', { class: 'panel' },
+      el('h2', { text: 'المكتبة' }),
+      el('p', { text: n + ' عمل، ' + e + ' حلقة.' }),
+      el('div', { class: 'tools' },
+        el('button', { class: 'btn primary', type: 'button', text: 'تنزيل library.json', onclick: exportFile }),
+        el('button', { class: 'btn', type: 'button', text: 'نسخ المحتوى', onclick: copyJson }),
+        el('a', { class: 'btn', href: 'index.html?preview=1', target: '_blank', rel: 'noopener', text: 'معاينة المسودة' }),
+        el('label', { class: 'btn', for: 'imp', text: 'استيراد ملف' }), file,
+        el('button', { class: 'btn danger', type: 'button', text: 'بدء من المنشور', onclick: resetToPublished })),
+      el('p', { class: 'hint', text: 'بعد التنزيل: افتح الملف library.json في مشروعك على GitHub، اختر Edit ثم الصق المحتوى بدل القديم، واضغط Commit.' }));
+  }
+
+  function validate() {
+    var problems = [];
+    lib.shows.forEach(function (s) {
+      var seen = {};
+      if (!s.title) problems.push('عمل بلا عنوان.');
+      s.episodes.forEach(function (e) {
+        var k = String(Number(e.n));
+        if (seen[k]) problems.push('«' + s.title + '»: رقم الحلقة ' + k + ' مكرر.');
+        seen[k] = 1;
+        if (!e.sources.length) problems.push('«' + s.title + '» حلقة ' + k + ': بلا مصدر.');
+      });
+    });
+    return problems;
+  }
+  function jsonText() { return JSON.stringify(lib, null, 1); }
+  function exportFile() {
+    var p = validate();
+    var blob = new Blob([jsonText()], { type: 'application/json' });
+    var a = el('a', { href: URL.createObjectURL(blob), download: 'library.json' });
+    document.body.appendChild(a); a.click(); a.remove();
+    say(p.length ? 'تم التنزيل، لكن انتبه: ' + p.join(' ') : 'تم تنزيل library.json.', p.length > 0);
+  }
+  function copyJson() {
+    var t = jsonText();
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(t).then(function () { say('تم النسخ (' + t.length + ' حرف).'); }, function () { say('تعذّر النسخ، استخدم التنزيل.', true); });
+    } else say('المتصفح لا يسمح بالنسخ، استخدم التنزيل.', true);
+  }
+  function resetToPublished() {
+    if (!confirm('ستُمسح مسودتك وتبدأ من النسخة المنشورة. متأكد؟')) return;
+    store.remove('draft'); selShow = null; editEp = null;
+    I.loadPublished().then(function (l) { lib = I.normalize(l); save(); build(); say('تم.'); })
+     .catch(function () { lib = I.normalize({}); save(); build(); say('لا توجد نسخة منشورة، بدأت فارغة.'); });
+  }
+
+  /* ----- الأعمال ----- */
+  var showForm = { id: null };
+  function showsPanel() {
+    var f = {
+      title: el('input', { type: 'text', id: 'sTitle', maxlength: '120' }),
+      kind: el('select', { id: 'sKind' }, I.KIND_ORDER.map(function (k) { return el('option', { value: k, text: I.KIND_ONE[k] }); })),
+      status: el('select', { id: 'sStatus' }, el('option', { value: 'ongoing', text: 'مستمر' }), el('option', { value: 'complete', text: 'مكتمل' })),
+      desc: el('textarea', { id: 'sDesc', maxlength: '1000' }),
+      cover: el('input', { type: 'url', id: 'sCover', placeholder: 'https://… (اختياري)', dir: 'ltr' })
+    };
+    var editing = lib.shows.filter(function (s) { return s.id === showForm.id; })[0];
+    if (editing) { f.title.value = editing.title || ''; f.kind.value = editing.kind; f.status.value = editing.status; f.desc.value = editing.desc || ''; f.cover.value = editing.cover || ''; }
+
+    var list = el('ul', { class: 'list' }, lib.shows.map(function (s) {
+      return el('li', { class: s.id === selShow ? 'sel' : '' },
+        el('span', { text: s.title + ' · ' + I.KIND_ONE[s.kind] + ' · ' + s.episodes.length + ' حلقة' }),
+        el('span', { class: 'tools', style: 'margin:0' },
+          el('button', { class: 'btn', type: 'button', text: 'الحلقات', onclick: function () { selShow = s.id; editEp = null; build(); window.scrollTo(0, document.body.scrollHeight); } }),
+          el('button', { class: 'btn', type: 'button', text: 'تعديل', onclick: function () { showForm.id = s.id; build(); } }),
+          el('button', { class: 'btn danger', type: 'button', text: 'حذف', onclick: function () {
+            if (!confirm('حذف «' + s.title + '» وكل حلقاته؟')) return;
+            lib.shows = lib.shows.filter(function (x) { return x.id !== s.id; });
+            if (selShow === s.id) selShow = null; save(); build(); say('تم الحذف.');
+          } })));
+    }));
+
+    return el('section', { class: 'panel' },
+      el('h2', { text: editing ? 'تعديل عمل' : 'عمل جديد' }),
+      el('label', { for: 'sTitle', text: 'العنوان' }), f.title,
+      el('label', { for: 'sKind', text: 'النوع' }), f.kind,
+      el('label', { for: 'sStatus', text: 'الحالة' }), f.status,
+      el('label', { for: 'sDesc', text: 'وصف قصير' }), f.desc,
+      el('label', { for: 'sCover', text: 'رابط غلاف (اختياري)' }), f.cover,
+      el('p', { class: 'hint', text: 'الغلاف يجب أن يكون رابط صورة تملك حق استخدامها. بدونه يظهر غلاف تلقائي بحرف العنوان.' }),
+      el('div', { class: 'tools' },
+        el('button', { class: 'btn primary', type: 'button', text: editing ? 'حفظ التعديل' : 'إضافة العمل', onclick: function () {
+          var title = f.title.value.trim();
+          if (!title) { say('اكتب عنوان العمل أولاً.', true); return; }
+          var cover = f.cover.value.trim();
+          if (cover && !I.isHttpUrl(cover)) { say('رابط الغلاف غير صالح.', true); return; }
+          var o = editing || { id: uid(), episodes: [] };
+          o.title = title; o.kind = f.kind.value; o.status = f.status.value; o.desc = f.desc.value.trim(); o.cover = cover || undefined;
+          if (!editing) lib.shows.push(o);
+          selShow = o.id; showForm.id = null; editEp = null; save(); build(); say('تم الحفظ. أضف الحلقات من الأسفل.');
+        } }),
+        editing ? el('button', { class: 'btn', type: 'button', text: 'إلغاء', onclick: function () { showForm.id = null; build(); } }) : null),
+      list);
+  }
+
+  /* ----- الحلقات ----- */
+  function epsPanel(s) {
+    var maxN = s.episodes.reduce(function (m, e) { return Math.max(m, Number(e.n) || 0); }, 0);
+    var e0 = editEp != null ? s.episodes.filter(function (e) { return Number(e.n) === Number(editEp); })[0] : null;
+    var f = {
+      n: el('input', { type: 'number', id: 'eN', min: '0', step: '1', inputmode: 'numeric' }),
+      title: el('input', { type: 'text', id: 'eT', maxlength: '160' }),
+      src1: el('input', { type: 'url', id: 'e1', dir: 'ltr', placeholder: 'رابط يوتيوب أو ساوند كلاود أو ملف صوتي' }),
+      src2: el('input', { type: 'url', id: 'e2', dir: 'ltr', placeholder: 'مصدر إضافي (اختياري)' }),
+      desc: el('textarea', { id: 'eD', maxlength: '600' })
+    };
+    var d1 = el('p', { class: 'det' }), d2 = el('p', { class: 'det' });
+    function detect(inp, out) {
+      var c = I.classify(inp.value);
+      out.className = 'det';
+      if (!inp.value.trim()) out.textContent = '';
+      else if (!c) { out.textContent = 'رابط غير مفهوم.'; out.className = 'det warn'; }
+      else out.textContent = 'تم التعرف: ' + I.sourceLabel(c) + (c.type === 'audio' ? ' (ملف أو رابط صوتي مباشر)' : '');
+    }
+    f.src1.addEventListener('input', function () { detect(f.src1, d1); });
+    f.src2.addEventListener('input', function () { detect(f.src2, d2); });
+
+    if (e0) {
+      f.n.value = e0.n; f.title.value = e0.title || ''; f.desc.value = e0.desc || '';
+      var src = e0.sources;
+      f.src1.value = src[0] ? (src[0].type === 'youtube' ? 'https://www.youtube.com/watch?v=' + src[0].id : src[0].url) : '';
+      f.src2.value = src[1] ? (src[1].type === 'youtube' ? 'https://www.youtube.com/watch?v=' + src[1].id : src[1].url) : '';
+      detect(f.src1, d1); detect(f.src2, d2);
+    } else f.n.value = String(maxN + 1);
+
+    function fetchTitle() {
+      var c = I.classify(f.src1.value);
+      if (!c || c.type !== 'youtube') { say('جلب العنوان يعمل مع روابط يوتيوب فقط.', true); return; }
+      say('جارٍ جلب العنوان…');
+      fetch('https://www.youtube.com/oembed?format=json&url=' + encodeURIComponent('https://www.youtube.com/watch?v=' + c.id))
+        .then(function (r) { if (!r.ok) throw 0; return r.json(); })
+        .then(function (j) { if (j && j.title) { f.title.value = j.title; say('تم جلب العنوان. راجعه قبل الحفظ.'); } else throw 0; })
+        .catch(function () { say('تعذّر جلب العنوان تلقائياً، اكتبه بنفسك.', true); });
+    }
+
+    var list = el('ul', { class: 'list' }, s.episodes.slice().sort(function (a, b) { return Number(a.n) - Number(b.n); }).map(function (e) {
+      return el('li', null,
+        el('span', { text: e.n + ' — ' + (e.title || 'بلا عنوان') + ' · ' + e.sources.map(I.sourceLabel).join('، ') }),
+        el('span', { class: 'tools', style: 'margin:0' },
+          el('button', { class: 'btn', type: 'button', text: 'تعديل', onclick: function () { editEp = e.n; build(); } }),
+          el('button', { class: 'btn danger', type: 'button', text: 'حذف', onclick: function () {
+            if (!confirm('حذف الحلقة ' + e.n + '؟')) return;
+            s.episodes = s.episodes.filter(function (x) { return x !== e; }); editEp = null; save(); build(); say('تم الحذف.');
+          } })));
+    }));
+
+    return el('section', { class: 'panel' },
+      el('h2', { text: 'حلقات: ' + s.title }),
+      el('label', { for: 'eN', text: 'رقم الحلقة' }), f.n,
+      el('label', { for: 'e1', text: 'المصدر' }), f.src1, d1,
+      el('div', { class: 'tools' }, el('button', { class: 'btn', type: 'button', text: 'جلب العنوان من يوتيوب', onclick: fetchTitle })),
+      el('label', { for: 'e2', text: 'مصدر إضافي' }), f.src2, d2,
+      el('p', { class: 'hint', text: 'ضع مصدراً مرئياً (يوتيوب) ومصدراً صوتياً (ملف أو ساوند كلاود) لو الحلقة متاحة بالشكلين. لا تضع إلا مصادر رسمية أو مرخّصة، ولا ملف صوت مستخرجاً من يوتيوب.' }),
+      el('label', { for: 'eT', text: 'عنوان الحلقة' }), f.title,
+      el('label', { for: 'eD', text: 'وصف (اختياري)' }), f.desc,
+      el('div', { class: 'tools' },
+        el('button', { class: 'btn primary', type: 'button', text: e0 ? 'حفظ التعديل' : 'إضافة الحلقة', onclick: function () {
+          var n = Number(f.n.value);
+          if (!isFinite(n) || f.n.value === '' || n < 0) { say('رقم الحلقة غير صالح.', true); return; }
+          var sources = [], bad = [];
+          [f.src1.value, f.src2.value].forEach(function (v) {
+            if (!v.trim()) return;
+            var c = I.classify(v); if (c) sources.push(c); else bad.push(v);
+          });
+          if (bad.length) { say('رابط غير مفهوم: ' + bad[0], true); return; }
+          if (!sources.length) { say('أضف مصدراً واحداً على الأقل.', true); return; }
+          var dup = s.episodes.filter(function (e) { return Number(e.n) === n && e !== e0; })[0];
+          if (dup) { say('رقم الحلقة ' + n + ' مستخدم بالفعل.', true); return; }
+          var o = e0 || {}; o.n = n; o.title = f.title.value.trim(); o.desc = f.desc.value.trim(); o.sources = sources; o.checkedAt = today();
+          if (!e0) s.episodes.push(o);
+          editEp = null; save(); build(); say('تم الحفظ في المسودة. نزّل library.json لما تخلص.');
+        } }),
+        e0 ? el('button', { class: 'btn', type: 'button', text: 'إلغاء', onclick: function () { editEp = null; build(); } }) : null),
+      list);
+  }
+
+  window.addEventListener('beforeunload', function (ev) { if (dirty) { ev.preventDefault(); ev.returnValue = ''; } });
+})();
+</script>
+</body>
+</html>
