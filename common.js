@@ -116,6 +116,30 @@
     return d ? normalize(d) : null;
   }
 
+  /* التصنيفات العشرة لأداة الكشف */
+  var CATS = [
+    { id: 'din', name: 'دين ودعوة وتاريخ إسلامي' },
+    { id: 'quran', name: 'قرآن كريم وحديث' },
+    { id: 'ulum', name: 'علوم وحياة وأفكار' },
+    { id: 'sard', name: 'سرد وقصص' },
+    { id: 'tech', name: 'تقنية وحاسوب وتصوير' },
+    { id: 'lang', name: 'لغات أجنبية' },
+    { id: 'manahij', name: 'مناهج دراسية' },
+    { id: 'anasheed', name: 'أناشيد وشعر' },
+    { id: 'arabic', name: 'لغة عربية' },
+    { id: 'other', name: 'أخرى' }
+  ];
+
+  /* المكتبة التي يعمل عليها المحرر: المسودة إن وُجدت، وإلا المنشورة (وتُحفظ كمسودة) */
+  function getWorkingLib() {
+    var d = loadDraft();
+    if (d) return Promise.resolve(d);
+    return loadPublished().catch(function () { return normalize({}); }).then(function (l) {
+      store.set('draft', l);
+      return l;
+    });
+  }
+
   function esc(s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
       return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
@@ -152,6 +176,6 @@
     ytId: ytId, ytListId: ytListId, classify: classify, isHttpUrl: isHttpUrl,
     sourceLabel: sourceLabel, isVideo: isVideo, isAudio: isAudio,
     normalize: normalize, loadPublished: loadPublished, loadDraft: loadDraft,
-    esc: esc, hash: hash, el: el
+    esc: esc, hash: hash, el: el, CATS: CATS, getWorkingLib: getWorkingLib
   };
 })();

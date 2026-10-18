@@ -1,0 +1,458 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>الكشف — اتساق</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Readex+Pro:wght@300;400;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+  <a class="brand" href="admin.html" aria-label="أداة التضمين"><span class="moon" aria-hidden="true"></span><b>الكشف</b></a>
+  <p class="tagline">جديد قنواتك مرتّب بالأيام، وتحوّل منه إلى اتساق ما تختاره. <a href="admin.html">أداة التضمين</a></p>
+</div></header>
+
+<main><div class="wrap" id="app" aria-live="polite"></div></main>
+
+<script src="common.js"></script>
+<script>
+(function () {
+  'use strict';
+  var I = window.Ittisaq, el = I.el, store = I.store, CATS = I.CATS;
+  var app = document.getElementById('app');
+
+  /* ---------- حالة ---------- */
+  var inbox = null;           // inbox.json
+  var chans = null;           // { version, channels:[{k,cat,name?}] }
+  var lib = null;             // المكتبة العاملة (مسودة اتساق)
+  var marks = store.get('marks', {});    // { id: { f:{s,d,v}, s:{snapshot} } }
+  var prevVisit = store.get('lastVisit', 0);
+  var tab = 'inbox';
+  var flt = { day: '', cat: '', ch: '', mark: '', q: '' };
+  var limit = 60;
+  var openIds = {};
+  var inboxError = '';
+  var MARKS = [['s', '⭐', 'نجمة'], ['d', '✓', 'تم'], ['v', '🔖', 'محفوظ']];
+
+  /* ---------- رسائل ---------- */
+  var toast = el('div', { class: 'toast', role: 'status', 'aria-live': 'polite' });
+  document.body.appendChild(toast);
+  var tt = null;
+  function say(t, bad) {
+    clearTimeout(tt); toast.textContent = t; toast.className = 'toast show' + (bad ? ' bad' : '');
+    tt = setTimeout(function () { toast.className = 'toast'; }, bad ? 7000 : 3500);
+  }
+  toast.addEventListener('click', function () { toast.className = 'toast'; });
+
+  /* ---------- أدوات ---------- */
+  function catName(id) { var c = CATS.filter(function (x) { return x.id === id; })[0]; return c ? c.name : 'غير مصنّف'; }
+  function pad(n) { return (n < 10 ? '0' : '') + n; }
+  function dayKey(iso) { var d = new Date(iso); return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); }
+  function dayLabel(k) { var p = k.split('-'); return Number(p[2]) + '/' + Number(p[1]); }
+  function timeLabel(iso) { try { return new Date(iso).toLocaleString('ar-EG', { hour: '2-digit', minute: '2-digit', day: 'numeric', month: 'numeric' }); } catch (e) { return iso; } }
+  function ago(ms) {
+    var m = Math.floor(ms / 60000);
+    if (m < 60) return m + ' دقيقة';
+    var h = Math.floor(m / 60); if (h < 48) return h + ' ساعة';
+    return Math.floor(h / 24) + ' يوم';
+  }
+  function repoInfo() {
+    var o = store.get('repo', '');
+    if (o && /^[\w.-]+\/[\w.-]+$/.test(o)) { var p = o.split('/'); return { owner: p[0], repo: p[1], manual: true }; }
+    var h = location.hostname;
+    if (/\.github\.io$/.test(h)) {
+      var owner = h.replace(/\.github\.io$/, '');
+      var seg = location.pathname.split('/').filter(Boolean)[0];
+      var repo = seg && !/\.html?$/.test(seg) ? seg : h;
+      return { owner: owner, repo: repo };
+    }
+    return null;
+  }
+  function fetchJson(u) { return fetch(u, { cache: 'no-store' }).then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); }); }
+
+  /* ---------- التحميل ---------- */
+  function loadInbox() {
+    var ri = repoInfo();
+    var tries = [];
+    if (ri) tries.push('https://raw.githubusercontent.com/' + ri.owner + '/' + ri.repo + '/main/inbox.json');
+    tries.push('inbox.json');
+    return tries.reduce(function (p, u) {
+      return p.catch(function () { return fetchJson(u); });
+    }, Promise.reject(new Error('start')));
+  }
+  function loadChans() {
+    var d = store.get('chans', null);
+    if (d && Array.isArray(d.channels)) return Promise.resolve(d);
+    return fetchJson('channels.json').then(function (j) { j.channels = Array.isArray(j.channels) ? j.channels : []; store.set('chans', j); return j; })
+      .catch(function () { var j = { version: 1, channels: [] }; store.set('chans', j); return j; });
+  }
+  function init() {
+    Promise.all([
+      loadInbox().catch(function (e) { inboxError = 'لم أستطع قراءة inbox.json بعد (لم يشتغل الجلب التلقائي ولا مرة، أو الاتصال ضعيف).'; return null; }),
+      loadChans(), I.getWorkingLib()
+    ]).then(function (r) {
+      inbox = r[0]; chans = r[1]; lib = r[2];
+      store.set('lastVisit', Date.now());
+      render();
+    });
+  }
+
+  /* ---------- خرائط ---------- */
+  function keyToId(k) { if (/^UC[\w-]{22}$/.test(k)) return k; var r = inbox && inbox.resolved && inbox.resolved[k]; return r ? r.id : null; }
+  function idToCat() {
+    var m = {}; chans.channels.forEach(function (c) { var id = keyToId(c.k); if (id) m[id] = c.cat; }); return m;
+  }
+  function chName(id, fallback) {
+    var m = inbox && inbox.chmeta && inbox.chmeta[id];
+    if (m && m.name) return m.name;
+    var c = chans.channels.filter(function (x) { return keyToId(x.k) === id; })[0];
+    return (c && c.name) || fallback || id;
+  }
+  function libIndex() {
+    var m = {};
+    lib.shows.forEach(function (s) { s.episodes.forEach(function (e) { e.sources.forEach(function (c) { if (c.type === 'youtube') m[c.id] = { show: s, ep: e }; }); }); });
+    return m;
+  }
+
+  function allItems() {
+    var cats = idToCat(), seen = {}, out = [];
+    ((inbox && inbox.items) || []).forEach(function (it) {
+      if (!cats[it.ch]) return;
+      seen[it.id] = 1;
+      out.push({ id: it.id, ch: it.ch, chName: chName(it.ch), cat: cats[it.ch], title: it.title, desc: it.desc || '', published: it.published, fetched: it.fetched });
+    });
+    Object.keys(marks).forEach(function (id) {
+      if (seen[id]) return;
+      var s = marks[id].s; if (!s) return;
+      out.push({ id: id, ch: s.ch, chName: s.chName, cat: s.cat, title: s.title, desc: s.desc || '', published: s.published, fetched: s.published, kept: true });
+    });
+    out.sort(function (a, b) { return Date.parse(b.published) - Date.parse(a.published); });
+    return out;
+  }
+  function hasMark(id, f) { return !!(marks[id] && marks[id].f && marks[id].f[f]); }
+  function anyMark(id) { return !!(marks[id] && marks[id].f && (marks[id].f.s || marks[id].f.d || marks[id].f.v)); }
+
+  function toggleMark(it, f) {
+    var m = marks[it.id] || (marks[it.id] = { f: {}, s: null });
+    m.f[f] = !m.f[f];
+    if (m.f.s || m.f.d || m.f.v) m.s = { ch: it.ch, chName: it.chName, cat: it.cat, title: it.title, desc: it.desc, published: it.published };
+    else delete marks[it.id];
+    store.set('marks', marks);
+  }
+
+  /* ---------- الواجهة العامة ---------- */
+  function render() {
+    app.textContent = '';
+    var tabs = el('div', { class: 'tabs', role: 'tablist' }, [['inbox', 'الوارد'], ['chans', 'القنوات (' + chans.channels.length + ')'], ['set', 'الإعدادات']].map(function (t) {
+      return el('button', { class: 'btn', type: 'button', role: 'tab', 'aria-pressed': String(tab === t[0]), text: t[1], onclick: function () { tab = t[0]; render(); } });
+    }));
+    app.appendChild(tabs);
+    app.appendChild(tab === 'inbox' ? inboxView() : tab === 'chans' ? chansView() : settingsView());
+  }
+
+  /* ---------- الوارد ---------- */
+  function inboxView() {
+    var box = el('div');
+    if (inboxError) box.appendChild(el('div', { class: 'banner', text: inboxError }));
+    if (inbox && inbox.updated) {
+      var age = Date.now() - Date.parse(inbox.updated);
+      var st = inbox.stats || {};
+      if (age > 9 * 3600 * 1000) box.appendChild(el('div', { class: 'banner', text: 'آخر تحديث قبل ' + ago(age) + '. قد تكون الجدولة متوقفة: افتح «الإعدادات» لتشغيله يدوياً.' }));
+      else box.appendChild(el('div', { class: 'okbox', text: 'آخر تحديث قبل ' + ago(age) + ' · ' + (st.items || 0) + ' فيديو · ' + (st.failed ? st.failed + ' قناة فشلت' : 'كل القنوات سليمة') }));
+    }
+    if (!chans.channels.length) {
+      box.appendChild(el('div', { class: 'empty' }, el('p', { text: 'لا توجد قنوات بعد. أضفها من تبويب «القنوات».' })));
+      return box;
+    }
+
+    var items = allItems();
+    var idx = libIndex();
+
+    // مرشحات (بدون اليوم)
+    function pass(it, ignoreDay) {
+      if (!ignoreDay && flt.day && dayKey(it.published) !== flt.day) return false;
+      if (flt.cat && it.cat !== flt.cat) return false;
+      if (flt.ch && it.ch !== flt.ch) return false;
+      if (flt.q && (it.title + ' ' + it.chName).toLowerCase().indexOf(flt.q.toLowerCase()) < 0) return false;
+      if (flt.mark === 'none' && anyMark(it.id)) return false;
+      if (flt.mark === 'any' && !anyMark(it.id)) return false;
+      if (['s', 'd', 'v'].indexOf(flt.mark) >= 0 && !hasMark(it.id, flt.mark)) return false;
+      return true;
+    }
+
+    // شريط الأيام
+    var counts = {}, days = [];
+    items.forEach(function (it) { if (!pass(it, true)) return; var k = dayKey(it.published); if (!counts[k]) { counts[k] = 0; days.push(k); } counts[k]++; });
+    days.sort().reverse();
+    var chips = el('div', { class: 'chips-row' },
+      el('button', { class: 'btn', type: 'button', 'aria-pressed': String(!flt.day), text: 'كل الأيام', onclick: function () { flt.day = ''; limit = 60; render(); } }),
+      days.slice(0, 31).map(function (k) {
+        return el('button', { class: 'btn', type: 'button', 'aria-pressed': String(flt.day === k), text: dayLabel(k) + ' (' + counts[k] + ')', onclick: function () { flt.day = k; limit = 60; render(); } });
+      }));
+    box.appendChild(chips);
+
+    // حقول التصفية
+    var selCat = el('select', { 'aria-label': 'التصنيف' }, el('option', { value: '', text: 'كل التصنيفات' }), CATS.map(function (c) { return el('option', { value: c.id, text: c.name }); }));
+    selCat.value = flt.cat;
+    selCat.addEventListener('change', function () { flt.cat = selCat.value; flt.ch = ''; limit = 60; render(); });
+
+    var chIds = {}, chList = [];
+    chans.channels.forEach(function (c) { var id = keyToId(c.k); if (id && (!flt.cat || c.cat === flt.cat) && !chIds[id]) { chIds[id] = 1; chList.push({ id: id, n: chName(id, c.name || c.k) }); } });
+    chList.sort(function (a, b) { return a.n.localeCompare(b.n, 'ar'); });
+    var selCh = el('select', { 'aria-label': 'القناة' }, el('option', { value: '', text: 'كل القنوات' }), chList.map(function (c) { return el('option', { value: c.id, text: c.n }); }));
+    selCh.value = flt.ch;
+    selCh.addEventListener('change', function () { flt.ch = selCh.value; limit = 60; render(); });
+
+    var selMk = el('select', { 'aria-label': 'العلامة' },
+      el('option', { value: '', text: 'كل العلامات' }), el('option', { value: 's', text: '⭐ نجمة' }), el('option', { value: 'd', text: '✓ تم' }),
+      el('option', { value: 'v', text: '🔖 محفوظ' }), el('option', { value: 'any', text: 'أي علامة' }), el('option', { value: 'none', text: 'بدون علامة' }));
+    selMk.value = flt.mark;
+    selMk.addEventListener('change', function () { flt.mark = selMk.value; limit = 60; render(); });
+
+    var q = el('input', { type: 'text', placeholder: 'بحث في العناوين وأسماء القنوات', 'aria-label': 'بحث', value: flt.q });
+    q.addEventListener('change', function () { flt.q = q.value.trim(); limit = 60; render(); });
+
+    box.appendChild(el('div', { class: 'filters' }, selCat, selCh, selMk, el('span'), el('div', { class: 'full' }, q)));
+
+    // القائمة
+    var list = items.filter(function (it) { return pass(it, false); });
+    var newCount = list.filter(function (it) { return !it.kept && prevVisit && Date.parse(it.fetched) > prevVisit; }).length;
+    box.appendChild(el('p', { class: 'hint', text: list.length + ' فيديو' + (newCount ? ' · ' + newCount + ' جديد منذ آخر زيارة' : '') }));
+    var ul = el('ul', { class: 'items' });
+    list.slice(0, limit).forEach(function (it) { ul.appendChild(itemView(it, idx)); });
+    box.appendChild(ul);
+    if (list.length > limit) box.appendChild(el('div', { class: 'tools' }, el('button', { class: 'btn', type: 'button', text: 'عرض المزيد (' + (list.length - limit) + ')', onclick: function () { limit += 60; render(); } })));
+    if (!list.length) box.appendChild(el('div', { class: 'empty', text: 'لا توجد فيديوهات بهذه المرشحات.' }));
+    return box;
+  }
+
+  function itemView(it, idx) {
+    var isNew = !it.kept && prevVisit && Date.parse(it.fetched) > prevVisit;
+    var inLib = idx[it.id];
+    var open = !!openIds[it.id];
+    var li = el('li', { class: 'item' + (open ? ' open' : '') });
+    var ttl = el('button', { class: 'ttl', type: 'button', 'aria-expanded': String(open), text: it.title || '(بلا عنوان)', onclick: function () { if (openIds[it.id]) delete openIds[it.id]; else openIds[it.id] = 1; render(); } });
+    var marksEl = el('div', { class: 'marks' }, MARKS.map(function (m) {
+      return el('button', { class: 'mk', type: 'button', 'aria-label': m[2], title: m[2], 'aria-pressed': String(hasMark(it.id, m[0])), text: m[1], onclick: function () { toggleMark(it, m[0]); render(); } });
+    }));
+    var meta = el('div', { class: 'meta' }, it.chName + ' · ' + catName(it.cat) + ' · ' + timeLabel(it.published),
+      isNew ? el('span', { class: 'tag', text: 'جديد' }) : null,
+      inLib ? el('span', { class: 'tag', text: 'في اتساق' }) : null,
+      it.kept ? el('span', { class: 'tag', text: 'محفوظ بعلامتك' }) : null);
+    li.appendChild(el('div', { class: 'head' }, el('div', { style: 'flex:1' }, ttl, meta), marksEl));
+    if (open) li.appendChild(detailView(it, inLib));
+    return li;
+  }
+
+  function detailView(it, inLib) {
+    var d = el('div', { class: 'detail' });
+    var link = 'https://www.youtube.com/watch?v=' + it.id;
+    d.appendChild(el('p', { dir: 'ltr', style: 'word-break:break-all' }, el('a', { href: link, target: '_blank', rel: 'noopener noreferrer', text: link })));
+
+    var pv = el('div'); var pvOn = false;
+    d.appendChild(el('div', { class: 'tools' },
+      el('button', { class: 'btn', type: 'button', text: 'معاينة بالمشغّل الرسمي', onclick: function () {
+        pvOn = !pvOn; pv.textContent = '';
+        if (pvOn) pv.appendChild(el('div', { class: 'frame' }, el('iframe', { src: 'https://www.youtube.com/embed/' + encodeURIComponent(it.id) + '?rel=0&playsinline=1', title: it.title, allow: 'accelerometer; encrypted-media; gyroscope; picture-in-picture; fullscreen', allowfullscreen: true, referrerpolicy: 'strict-origin-when-cross-origin' })));
+      } })));
+    d.appendChild(pv);
+
+    if (inLib) d.appendChild(el('p', { class: 'okbox', text: 'موجود في اتساق: «' + inLib.show.title + '» الحلقة ' + inLib.ep.n + '.' }));
+
+    // تحويل إلى اتساق
+    var selShow = el('select', { id: 'cs' + it.id }, lib.shows.map(function (s) { return el('option', { value: s.id, text: s.title }); }), el('option', { value: '__new', text: '＋ عمل جديد…' }));
+    var nwTitle = el('input', { type: 'text', placeholder: 'اسم العمل الجديد', maxlength: '120' });
+    var nwKind = el('select', null, I.KIND_ORDER.map(function (k) { return el('option', { value: k, text: I.KIND_ONE[k] }); }));
+    var nwBox = el('div', { class: 'grid2', hidden: true }, nwTitle, nwKind);
+    var num = el('input', { type: 'number', min: '0', step: '1', inputmode: 'numeric' });
+    var title = el('input', { type: 'text', maxlength: '160', value: it.title });
+    var desc = el('textarea', { maxlength: '600' }); desc.value = it.desc;
+    function nextN(s) { return s.episodes.reduce(function (m, e) { return Math.max(m, Number(e.n) || 0); }, 0) + 1; }
+    function cur() { return lib.shows.filter(function (s) { return s.id === selShow.value; })[0]; }
+    function sync() { var isNew = selShow.value === '__new'; nwBox.hidden = !isNew; num.value = String(isNew ? 1 : (cur() ? nextN(cur()) : 1)); }
+    var last = store.get('lastShow', null);
+    if (lib.shows.some(function (s) { return s.id === last; })) selShow.value = last; else if (!lib.shows.length) selShow.value = '__new';
+    selShow.addEventListener('change', sync); sync();
+
+    d.appendChild(el('h2', { style: 'font-size:1.05rem;margin:14px 0 4px', text: 'تحويل إلى اتساق' }));
+    d.appendChild(el('label', { for: 'cs' + it.id, text: 'العمل' })); d.appendChild(selShow); d.appendChild(nwBox);
+    d.appendChild(el('label', { text: 'رقم الحلقة' })); d.appendChild(num);
+    d.appendChild(el('label', { text: 'عنوان الحلقة (عدّله بصياغتك أو اتركه)' })); d.appendChild(title);
+    d.appendChild(el('label', { text: 'الوصف (اختياري)' })); d.appendChild(desc);
+    d.appendChild(el('div', { class: 'tools' }, el('button', { class: 'btn primary', type: 'button', text: 'إضافة إلى اتساق', onclick: function () {
+      var s;
+      if (selShow.value === '__new') {
+        var nt = nwTitle.value.trim(); if (!nt) { say('اكتب اسم العمل الجديد.', true); return; }
+        s = { id: 's' + Date.now().toString(36) + Math.floor(Math.random() * 1296).toString(36), title: nt, kind: nwKind.value, status: 'ongoing', desc: '', episodes: [] };
+        lib.shows.push(s);
+      } else s = cur();
+      var n = Number(num.value);
+      if (!isFinite(n) || num.value === '' || n < 0) { say('رقم الحلقة غير صالح.', true); return; }
+      if (s.episodes.some(function (e) { return Number(e.n) === n; })) { say('رقم الحلقة ' + n + ' مستخدم بالفعل في هذا العمل.', true); return; }
+      if (libIndex()[it.id]) { say('هذا الفيديو موجود بالفعل في اتساق.', true); return; }
+      s.episodes.push({ n: n, title: title.value.trim(), desc: desc.value.trim(), sources: [{ type: 'youtube', id: it.id }], checkedAt: new Date().toISOString().slice(0, 10) });
+      store.set('draft', lib); store.set('lastShow', s.id);
+      say('أُضيف إلى «' + s.title + '» حلقة ' + n + '. لا تنس تنزيل library.json من أداة التضمين.');
+      render();
+    } })));
+    return d;
+  }
+
+  /* ---------- القنوات ---------- */
+  function parseLine(line) {
+    line = line.trim(); if (!line) return null;
+    var name = '';
+    if (line.indexOf(',') > -1) {
+      var parts = line.split(','); name = (parts[parts.length - 1] || '').trim().replace(/^"|"$/g, '');
+      if (/^(https?:|UC[\w-]{22})/.test(name)) name = '';
+    }
+    var m = line.match(/UC[\w-]{22}/);
+    if (m) return { k: m[0], name: name };
+    var h = line.match(/@[\w.\-]+/);
+    if (h) return { k: h[0], name: '' };
+    var u = line.match(/https?:\/\/(?:www\.|m\.)?youtube\.com\/(?:c|user)\/[^\s/?]+/);
+    if (u) return { k: u[0], name: '' };
+    return null;
+  }
+  function saveChans() { store.set('chans', chans); }
+
+  var chQ = '';
+  function chansView() {
+    var box = el('div');
+    var addCat = el('select', { id: 'addCat' }, CATS.map(function (c) { return el('option', { value: c.id, text: c.name }); }));
+    addCat.value = store.get('addCat', 'din');
+    var ta = el('textarea', { id: 'addTa', dir: 'ltr', style: 'min-height:140px', placeholder: '@اسم_القناة\nhttps://www.youtube.com/@اسم\nhttps://www.youtube.com/channel/UC…\nأو سطور ملف اشتراكاتك من Google Takeout' });
+    box.appendChild(el('section', { class: 'panel' },
+      el('h2', { text: 'إضافة قنوات' }),
+      el('label', { for: 'addCat', text: 'التصنيف' }), addCat,
+      el('label', { for: 'addTa', text: 'ألصق قنوات، كل قناة في سطر' }), ta,
+      el('p', { class: 'hint', text: 'يقبل رابط القناة أو @handle أو معرّف UC…. وإن لصقت ملف subscriptions.csv من Takeout فالأسطر تُقرأ كما هي (المعرّف والاسم).' }),
+      el('div', { class: 'tools' }, el('button', { class: 'btn primary', type: 'button', text: 'إضافة', onclick: function () {
+        var have = {}; chans.channels.forEach(function (c) { have[c.k] = 1; });
+        var added = 0, dup = 0, bad = 0;
+        ta.value.split(/\r?\n/).forEach(function (line) {
+          if (!line.trim()) return;
+          var p = parseLine(line);
+          if (!p) { bad++; return; }
+          if (have[p.k]) { dup++; return; }
+          have[p.k] = 1; added++;
+          chans.channels.push({ k: p.k, cat: addCat.value, name: p.name || undefined });
+        });
+        store.set('addCat', addCat.value);
+        if (added) saveChans();
+        ta.value = '';
+        render();
+        say('أُضيفت ' + added + ' قناة' + (dup ? '، ' + dup + ' مكررة' : '') + (bad ? '، ' + bad + ' سطر غير مفهوم' : '') + (added ? '. للتفعيل نزّل channels.json وارفعه (الإعدادات).' : '.'), !added);
+      } }))));
+
+    var search = el('input', { type: 'text', placeholder: 'بحث في القنوات', 'aria-label': 'بحث في القنوات', value: chQ });
+    search.addEventListener('change', function () { chQ = search.value.trim(); render(); });
+    box.appendChild(el('div', { class: 'filters' }, el('div', { class: 'full' }, search)));
+
+    CATS.forEach(function (c) {
+      var list = chans.channels.filter(function (x) { return x.cat === c.id; });
+      if (chQ) list = list.filter(function (x) { var id = keyToId(x.k); return (chName(id || x.k, x.name || x.k) + ' ' + x.k).toLowerCase().indexOf(chQ.toLowerCase()) >= 0; });
+      if (!list.length) return;
+      var det = el('details', { class: 'help' }, el('summary', { text: c.name + ' (' + list.length + ')' }));
+      if (chQ) det.setAttribute('open', '');
+      list.forEach(function (x) {
+        var id = keyToId(x.k), meta = id && inbox && inbox.chmeta && inbox.chmeta[id];
+        var status = '';
+        if (!id) { var ur = inbox && inbox.unresolved && inbox.unresolved[x.k]; status = ur ? 'تعذّر حلّ المعرّف: ' + ur : 'بانتظار أول تحديث'; }
+        else if (meta && meta.err) status = 'فشل الجلب: ' + meta.err;
+        var mv = el('select', { 'aria-label': 'نقل إلى تصنيف' }, CATS.map(function (cc) { return el('option', { value: cc.id, text: cc.name }); }));
+        mv.value = x.cat;
+        mv.addEventListener('change', function () { x.cat = mv.value; saveChans(); render(); say('تم النقل.'); });
+        det.appendChild(el('div', { class: 'row-line' },
+          el('div', { style: 'flex:1;min-width:150px' }, el('div', { text: chName(id || x.k, x.name || x.k) }), el('div', { class: 'hint', dir: 'ltr', text: x.k }), status ? el('div', { class: 'err', text: status }) : null),
+          mv,
+          el('button', { class: 'btn danger', type: 'button', text: 'حذف', onclick: function () {
+            if (!confirm('حذف هذه القناة من القائمة؟')) return;
+            chans.channels = chans.channels.filter(function (y) { return y !== x; }); saveChans(); render();
+          } })));
+      });
+      box.appendChild(det);
+    });
+    return box;
+  }
+
+  /* ---------- الإعدادات ---------- */
+  function download(name, text, type) {
+    var blob = new Blob([text], { type: type || 'application/json' });
+    var a = el('a', { href: URL.createObjectURL(blob), download: name });
+    document.body.appendChild(a); a.click(); a.remove();
+  }
+  function settingsView() {
+    var box = el('div');
+    var ri = repoInfo();
+
+    box.appendChild(el('section', { class: 'panel' },
+      el('h2', { text: 'تفعيل قائمة القنوات' }),
+      el('p', { text: 'القنوات التي تضيفها هنا تُحفظ في متصفحك. لكي يجلب الجدول التلقائي جديدها، نزّل الملف وارفعه إلى مشروعك على GitHub بدل channels.json القديم.' }),
+      el('div', { class: 'tools' },
+        el('button', { class: 'btn primary', type: 'button', text: 'تنزيل channels.json', onclick: function () { download('channels.json', JSON.stringify(chans, null, 1)); say('تم التنزيل.'); } }),
+        el('button', { class: 'btn', type: 'button', text: 'نسخ المحتوى', onclick: function () {
+          var t = JSON.stringify(chans, null, 1);
+          if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(function () { say('تم النسخ.'); }, function () { say('تعذّر النسخ.', true); });
+          else say('المتصفح لا يسمح بالنسخ، استخدم التنزيل.', true);
+        } }),
+        el('button', { class: 'btn danger', type: 'button', text: 'العودة لقائمة GitHub', onclick: function () {
+          if (!confirm('ستُمسح تعديلاتك غير المرفوعة على القنوات. متأكد؟')) return;
+          store.remove('chans'); loadChans().then(function (c) { chans = c; render(); say('تم.'); });
+        } }))));
+
+    var runUrl = ri ? 'https://github.com/' + ri.owner + '/' + ri.repo + '/actions/workflows/fetch.yml' : '';
+    var repoIn = el('input', { type: 'text', dir: 'ltr', placeholder: 'irtikaz2020/ittisaq', value: store.get('repo', '') });
+    box.appendChild(el('section', { class: 'panel' },
+      el('h2', { text: 'التحديث' }),
+      inbox && inbox.updated ? el('p', { text: 'آخر تحديث: ' + timeLabel(inbox.updated) + ' (قبل ' + ago(Date.now() - Date.parse(inbox.updated)) + '). المحفوظ يوماً بيوم لمدة ' + (inbox.retentionDays || 30) + ' يوماً.' }) : el('p', { text: 'لم يحدث تحديث بعد.' }),
+      runUrl ? el('div', { class: 'tools' }, el('a', { class: 'btn primary', href: runUrl, target: '_blank', rel: 'noopener', text: 'تشغيل التحديث الآن على GitHub' })) : null,
+      el('p', { class: 'hint', text: 'في صفحة GitHub اضغط «Run workflow». ويعمل الجدول وحده كل 3 ساعات تقريباً.' }),
+      el('label', { text: 'مشروعك على GitHub (للقراءة من خارج github.io فقط)' }), repoIn,
+      el('div', { class: 'tools' }, el('button', { class: 'btn', type: 'button', text: 'حفظ', onclick: function () { store.set('repo', repoIn.value.trim()); say('تم الحفظ.'); } }))));
+
+    // مشاكل القنوات
+    var errs = [];
+    if (inbox && inbox.chmeta) Object.keys(inbox.chmeta).forEach(function (id) { var m = inbox.chmeta[id]; if (m.err) errs.push(chName(id) + ': ' + m.err); });
+    if (inbox && inbox.unresolved) Object.keys(inbox.unresolved).forEach(function (k) { errs.push(k + ': ' + inbox.unresolved[k]); });
+    box.appendChild(el('section', { class: 'panel' },
+      el('h2', { text: 'قنوات بها مشاكل (' + errs.length + ')' }),
+      errs.length ? el('ul', { class: 'list' }, errs.slice(0, 50).map(function (e) { return el('li', { class: 'err', text: e }); })) : el('p', { class: 'hint', text: 'لا توجد مشاكل مسجّلة.' }),
+      errs.length > 50 ? el('p', { class: 'hint', text: 'والمزيد (أول 50 فقط).' }) : null));
+
+    // نسخة احتياطية للعلامات
+    var nMarks = Object.keys(marks).length;
+    var file = el('input', { type: 'file', accept: 'application/json,.json', class: 'sr', id: 'imp' });
+    file.addEventListener('change', function () {
+      var f = file.files[0]; if (!f) return;
+      var r = new FileReader();
+      r.onload = function () {
+        try {
+          var j = JSON.parse(r.result);
+          if (!j || j.app !== 'ittisaq-discover') throw new Error('bad');
+          if (!confirm('سيُستبدل ما عندك بمحتوى الملف (العلامات والقنوات). متأكد؟')) return;
+          marks = j.marks || {}; store.set('marks', marks);
+          if (j.chans && Array.isArray(j.chans.channels)) { chans = j.chans; saveChans(); }
+          render(); say('تم الاسترجاع.');
+        } catch (e) { say('هذا الملف ليس نسخة احتياطية من الكشف.', true); }
+      };
+      r.readAsText(f);
+    });
+    box.appendChild(el('section', { class: 'panel' },
+      el('h2', { text: 'نسخة احتياطية (' + nMarks + ' فيديو معلَّم)' }),
+      el('p', { text: 'علاماتك (⭐ ✓ 🔖) محفوظة في متصفحك فقط، ولا تُمسح مع تنظيف الوارد، لكنها تضيع لو مسحت بيانات المتصفح. احفظ نسخة منها من وقت لآخر.' }),
+      el('div', { class: 'tools' },
+        el('button', { class: 'btn primary', type: 'button', text: 'حفظ نسخة احتياطية', onclick: function () { download('ittisaq-discover-backup.json', JSON.stringify({ app: 'ittisaq-discover', version: 1, marks: marks, chans: chans }, null, 1)); store.set('lastBackup', Date.now()); say('تم تجهيز الملف.'); } }),
+        el('label', { class: 'btn', for: 'imp', text: 'استرجاع نسخة' }), file)));
+    return box;
+  }
+
+  init();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,422 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#0e1828">
+<title>أداة التضمين — اتساق</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Readex+Pro:wght@300;400;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+  <a class="brand" href="index.html" aria-label="اتساق"><span class="moon" aria-hidden="true"></span><b>أداة التضمين</b></a>
+  <p class="tagline">إضافة الأعمال والحلقات. المسودة تُحفظ في متصفحك، ثم تُصدَّر وتُرفع. <a href="discover.html">الكشف عن الجديد</a></p>
+</div></header>
+
+<main><div class="wrap" id="app"></div></main>
+
+<script src="common.js"></script>
+<script>
+(function () {
+  'use strict';
+  var I = window.Ittisaq, el = I.el, store = I.store;
+  var app = document.getElementById('app');
+  var lib = null, selShow = null, editEp = null, dirty = false;
+  var statusEl = el('div', { class: 'toast', role: 'status', 'aria-live': 'polite' });
+  document.body.appendChild(statusEl);
+  var toastTimer = null;
+  function say(t, bad) {
+    clearTimeout(toastTimer);
+    statusEl.textContent = t;
+    statusEl.className = 'toast show' + (bad ? ' bad' : '');
+    toastTimer = setTimeout(function () { statusEl.className = 'toast'; }, bad ? 7000 : 3500);
+  }
+  statusEl.addEventListener('click', function () { statusEl.className = 'toast'; });
+  if ('serviceWorker' in navigator) { try { navigator.serviceWorker.register('sw.js').catch(function () {}); } catch (e) {} }
+  function save() { store.set('draft', lib); dirty = false; }
+  function uid() { return 's' + Date.now().toString(36) + Math.floor(Math.random() * 1296).toString(36); }
+  function today() { return new Date().toISOString().slice(0, 10); }
+  function cur() { return lib.shows.filter(function (s) { return s.id === selShow; })[0]; }
+
+  /* ---------- البناء ---------- */
+  function build() {
+    app.textContent = '';
+    app.appendChild(helpPanel());
+    var sp = sharePanel(); if (sp) app.appendChild(sp);
+    app.appendChild(libPanel());
+    app.appendChild(showsPanel());
+    if (cur()) { app.appendChild(epsPanel(cur())); app.appendChild(bulkPanel(cur())); }
+  }
+
+  /* ----- شرح الأداة ----- */
+  function helpPanel() {
+    var d = el('details', { class: 'help' },
+      el('summary', { text: 'كيف تعمل هذه الأداة؟' }),
+      el('ol', null,
+        el('li', { text: 'العمل هو الغلاف الكبير: سلسلة، أو حلقات مستمرة، أو بودكاست. والحلقة تُضاف داخله. أنشئ العمل أولاً من خانة «عمل جديد».' }),
+        el('li', { text: 'لإضافة حلقة: في تطبيق يوتيوب اضغط «مشاركة» ثم «نسخ الرابط»، ثم الصقه في خانة «رابط الحلقة» تحت عنوان «حلقات: اسم العمل» (تظهر بعد اختيار العمل بزر «الحلقات»). الأداة تعرف النوع وحدها.' }),
+        el('li', { text: 'لإضافة عدة حلقات مرة واحدة: استخدم «إضافة عدة حلقات» (ألصق روابط، كل رابط في سطر)، أو الصق رابط قائمة تشغيل كاملة.' }),
+        el('li', { text: 'الأسرع: ثبّت الأداة كتطبيق (قائمة كروم ثم «تثبيت التطبيق»). بعدها من تطبيق يوتيوب اضغط «مشاركة» واختر «تضمين»، فيصل الرابط جاهزاً.' }),
+        el('li', { text: 'كل ما تضيفه يُحفظ في متصفحك كمسودة، ولا يظهر للزوار. «معاينة المسودة» تعرض الموقع بها. وعند الانتهاء نزّل library.json وارفعه على GitHub بدل القديم.' })));
+    if (!lib.shows.length) d.setAttribute('open', '');
+    return d;
+  }
+
+  /* ----- رابط وصل بالمشاركة ----- */
+  var shared = readShare();
+  function readShare() {
+    var q;
+    try { q = new URLSearchParams(location.search); } catch (e) { return null; }
+    var parts = [q.get('url') || '', q.get('text') || '', q.get('title') || ''];
+    var m = parts.join(' ').match(/https?:\/\/[^\s]+/);
+    if (!m) return null;
+    var t = (q.get('title') || q.get('text') || '').replace(/https?:\/\/[^\s]+/g, '').trim();
+    return { link: m[0], title: t };
+  }
+  function nextN(s) { return s.episodes.reduce(function (m, e) { return Math.max(m, Number(e.n) || 0); }, 0) + 1; }
+  function sharePanel() {
+    if (!shared) return null;
+    var c = I.classify(shared.link);
+    var box = el('section', { class: 'share-box' }, el('h2', { text: 'وصلك رابط من المشاركة' }));
+    box.appendChild(el('p', { dir: 'ltr', style: 'word-break:break-all', text: shared.link }));
+    box.appendChild(el('p', { class: 'det', text: c ? 'تم التعرف: ' + I.sourceLabel(c) : 'رابط غير مفهوم.' }));
+    function dismiss() { shared = null; try { history.replaceState(null, '', location.pathname); } catch (e) {} build(); }
+    if (!lib.shows.length) {
+      box.appendChild(el('p', { text: 'لا توجد أعمال بعد. أنشئ عملاً من خانة «عمل جديد» أولاً، ثم عد وشارك الرابط من جديد.' }));
+      box.appendChild(el('div', { class: 'tools' }, el('button', { class: 'btn', type: 'button', text: 'تجاهل', onclick: dismiss })));
+      return box;
+    }
+    var last = store.get('lastShow', null);
+    var pick = el('select', { id: 'shSel' }, lib.shows.map(function (x) { return el('option', { value: x.id, text: x.title }); }));
+    pick.value = lib.shows.some(function (x) { return x.id === last; }) ? last : lib.shows[0].id;
+    var num = el('input', { type: 'number', id: 'shN', min: '0', step: '1', inputmode: 'numeric' });
+    var ttl = el('input', { type: 'text', id: 'shT', maxlength: '160' });
+    ttl.value = shared.title || '';
+    function sh() { return lib.shows.filter(function (x) { return x.id === pick.value; })[0]; }
+    function refreshN() { num.value = String(nextN(sh())); }
+    pick.addEventListener('change', refreshN); refreshN();
+    box.appendChild(el('label', { for: 'shSel', text: 'أضفها إلى عمل' })); box.appendChild(pick);
+    box.appendChild(el('label', { for: 'shN', text: 'رقم الحلقة' })); box.appendChild(num);
+    box.appendChild(el('label', { for: 'shT', text: 'عنوان الحلقة (راجعه)' })); box.appendChild(ttl);
+    box.appendChild(el('div', { class: 'tools' },
+      el('button', { class: 'btn primary', type: 'button', text: 'إضافة الحلقة', onclick: function () {
+        if (!c) { say('الرابط غير مفهوم، لا يمكن إضافته.', true); return; }
+        var s = sh(), n = Number(num.value);
+        if (!isFinite(n) || num.value === '' || n < 0) { say('رقم الحلقة غير صالح.', true); return; }
+        if (s.episodes.some(function (e) { return Number(e.n) === n; })) { say('رقم الحلقة ' + n + ' مستخدم بالفعل.', true); return; }
+        s.episodes.push({ n: n, title: ttl.value.trim(), desc: '', sources: [c], checkedAt: today() });
+        store.set('lastShow', s.id); selShow = s.id; save(); shared = null;
+        try { history.replaceState(null, '', location.pathname); } catch (e) {}
+        build(); say('تمت إضافة الحلقة ' + n + ' إلى «' + s.title + '».');
+      } }),
+      el('button', { class: 'btn', type: 'button', text: 'تجاهل', onclick: dismiss })));
+    return box;
+  }
+
+  /* ----- إضافة دفعة وقوائم التشغيل ----- */
+  function sourceKey(c) { return c.type + ':' + (c.id || c.url); }
+  function bulkPanel(s) {
+    var ta = el('textarea', { id: 'bulk', dir: 'ltr', style: 'min-height:130px', placeholder: 'https://youtu.be/…\nhttps://youtu.be/… عنوان اختياري بعد الرابط' });
+    var key = el('input', { type: 'text', id: 'apik', dir: 'ltr', autocomplete: 'off', placeholder: 'مفتاح YouTube Data API (اختياري)' });
+    key.value = store.get('apikey', '') || '';
+    var pl = el('input', { type: 'url', id: 'plUrl', dir: 'ltr', placeholder: 'رابط قائمة تشغيل https://www.youtube.com/playlist?list=…' });
+
+    function have() { var h = {}; s.episodes.forEach(function (e) { e.sources.forEach(function (c) { h[sourceKey(c)] = 1; }); }); return h; }
+
+    function addMany(items) {
+      var h = have(), n = nextN(s) - 1, added = 0, skipped = 0;
+      items.forEach(function (it) {
+        var k = sourceKey(it.src);
+        if (h[k]) { skipped++; return; }
+        h[k] = 1; n++; added++;
+        s.episodes.push({ n: n, title: it.title || '', desc: '', sources: [it.src], checkedAt: today() });
+      });
+      return { added: added, skipped: skipped };
+    }
+
+    function addFromText() {
+      var items = [], bad = 0;
+      ta.value.split(/\r?\n/).forEach(function (line) {
+        line = line.trim(); if (!line) return;
+        var m = line.match(/https?:\/\/\S+/);
+        var c = m && I.classify(m[0]);
+        if (!c) { bad++; return; }
+        items.push({ src: c, title: line.replace(m[0], '').replace(/^[\s\-–|:]+/, '').trim() });
+      });
+      if (!items.length) { say(bad ? 'لا يوجد رابط مفهوم في النص.' : 'ألصق رابطاً واحداً على الأقل.', true); return; }
+      var r = addMany(items); save(); build();
+      say('أُضيفت ' + r.added + ' حلقة' + (r.skipped ? '، وتخطّيت ' + r.skipped + ' مكررة' : '') + (bad ? '، و' + bad + ' سطر غير مفهوم' : '') + '.', r.added === 0);
+    }
+
+    function importList() {
+      var k = key.value.trim(), u = pl.value.trim(), id = null;
+      try { id = new URL(u).searchParams.get('list'); } catch (e) { if (/^[\w-]{10,}$/.test(u)) id = u; }
+      if (!id) { say('الصق رابط قائمة تشغيل صالحاً (فيه list=).', true); return; }
+      if (!k) { say('أدخل مفتاح API أولاً، أو استخدم «إضافة عدة حلقات» بدلاً منه.', true); return; }
+      store.set('apikey', k);
+      say('جارٍ جلب القائمة…');
+      var ids = [];
+      function page(token, count) {
+        var url = 'https://www.googleapis.com/youtube/v3/playlistItems?part=contentDetails&maxResults=50&playlistId=' + encodeURIComponent(id) + '&key=' + encodeURIComponent(k) + (token ? '&pageToken=' + encodeURIComponent(token) : '');
+        return fetch(url).then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); }).then(function (x) {
+          if (!x.ok) throw new Error((x.j && x.j.error && x.j.error.message) || 'فشل الطلب');
+          (x.j.items || []).forEach(function (it) { var v = it.contentDetails && it.contentDetails.videoId; if (v && I.ytId(v)) ids.push(v); });
+          if (x.j.nextPageToken && count < 40) return page(x.j.nextPageToken, count + 1);
+        });
+      }
+      page(null, 0).then(function () {
+        if (!ids.length) { say('القائمة لا تحتوي فيديوهات متاحة.', true); return; }
+        var r = addMany(ids.map(function (v) { return { src: { type: 'youtube', id: v }, title: '' }; }));
+        save(); build();
+        say('أُضيفت ' + r.added + ' حلقة بالترتيب' + (r.skipped ? '، وتخطّيت ' + r.skipped + ' مكررة' : '') + '. العناوين فارغة: اكتبها أو استخدم «جلب العناوين الناقصة».', r.added === 0);
+      }).catch(function (e) { say('تعذّر الاستيراد: ' + e.message, true); });
+    }
+
+    function fillTitles() {
+      var todo = s.episodes.filter(function (e) { return !e.title && e.sources[0] && e.sources[0].type === 'youtube'; });
+      if (!todo.length) { say('لا توجد حلقات بلا عنوان.'); return; }
+      var done = 0;
+      function next(i) {
+        if (i >= todo.length) { save(); build(); say('تم جلب ' + done + ' عنوان. راجعها وعدّل ما يلزم.'); return; }
+        var e = todo[i];
+        fetch('https://www.youtube.com/oembed?format=json&url=' + encodeURIComponent('https://www.youtube.com/watch?v=' + e.sources[0].id))
+          .then(function (r) { if (!r.ok) throw 0; return r.json(); })
+          .then(function (j) { if (j && j.title) { e.title = j.title; done++; } })
+          .catch(function () {})
+          .then(function () { setTimeout(function () { next(i + 1); }, 250); });
+        if (i % 5 === 0) say('جارٍ جلب العناوين… ' + i + ' من ' + todo.length);
+      }
+      next(0);
+    }
+
+    return el('section', { class: 'panel' },
+      el('h2', { text: 'إضافة عدة حلقات إلى: ' + s.title }),
+      el('label', { for: 'bulk', text: 'ألصق روابط، كل رابط في سطر' }), ta,
+      el('p', { class: 'hint', text: 'تُرقَّم الحلقات بالتتابع من آخر رقم. يمكنك كتابة عنوان بعد الرابط في نفس السطر.' }),
+      el('div', { class: 'tools' },
+        el('button', { class: 'btn primary', type: 'button', text: 'إضافة الروابط', onclick: addFromText }),
+        el('button', { class: 'btn', type: 'button', text: 'جلب العناوين الناقصة', onclick: fillTitles })),
+      el('details', { class: 'help' },
+        el('summary', { text: 'استيراد قائمة تشغيل كاملة (يحتاج مفتاح API)' }),
+        el('p', { class: 'hint', text: 'بدون مفتاح لا يمكن قراءة محتوى القائمة من المتصفح. المفتاح مجاني من Google Cloud، ويُحفظ في متصفحك فقط. الأداة تجلب أرقام الفيديوهات وترتيبها فقط، أما العناوين فتكتبها أنت أو تجلبها من الزر.' }),
+        el('label', { for: 'plUrl', text: 'رابط القائمة' }), pl,
+        el('label', { for: 'apik', text: 'المفتاح' }), key,
+        el('div', { class: 'tools' }, el('button', { class: 'btn primary', type: 'button', text: 'استيراد القائمة', onclick: importList })),
+        el('p', { class: 'hint', text: 'بديل بدون مفتاح: الصق رابط قائمة التشغيل في خانة «رابط الحلقة» لتصبح كلها حلقة واحدة تُشغَّل بالمشغّل الرسمي، لكن بدون ترتيب وعناوين حلقات داخل اتساق.' })));
+  }
+
+  /* ----- المكتبة: تصدير واستيراد ----- */
+  function libPanel() {
+    var n = lib.shows.length, e = lib.shows.reduce(function (a, s) { return a + s.episodes.length; }, 0);
+    var file = el('input', { type: 'file', accept: 'application/json,.json', class: 'sr', id: 'imp' });
+    file.addEventListener('change', function () {
+      var f = file.files[0]; if (!f) return;
+      var r = new FileReader();
+      r.onload = function () {
+        try {
+          var d = JSON.parse(r.result);
+          if (!d || !Array.isArray(d.shows)) throw new Error('bad');
+          if (!confirm('سيحلّ هذا الملف محل مسودتك الحالية. متأكد؟')) return;
+          lib = I.normalize(d); selShow = null; editEp = null; save(); build(); say('تم الاستيراد.');
+        } catch (x) { say('الملف ليس مكتبة صالحة.', true); }
+      };
+      r.readAsText(f);
+    });
+    return el('section', { class: 'panel' },
+      el('h2', { text: 'المكتبة' }),
+      el('p', { text: n + ' عمل، ' + e + ' حلقة.' }),
+      el('div', { class: 'tools' },
+        el('button', { class: 'btn primary', type: 'button', text: 'تنزيل library.json', onclick: exportFile }),
+        el('button', { class: 'btn', type: 'button', text: 'نسخ المحتوى', onclick: copyJson }),
+        el('a', { class: 'btn', href: 'index.html?preview=1', target: '_blank', rel: 'noopener', text: 'معاينة المسودة' }),
+        el('label', { class: 'btn', for: 'imp', text: 'استيراد ملف' }), file,
+        el('button', { class: 'btn danger', type: 'button', text: 'بدء من المنشور', onclick: resetToPublished })),
+      el('p', { class: 'hint', text: 'بعد التنزيل: افتح الملف library.json في مشروعك على GitHub، اختر Edit ثم الصق المحتوى بدل القديم، واضغط Commit.' }));
+  }
+
+  function validate() {
+    var problems = [];
+    lib.shows.forEach(function (s) {
+      var seen = {};
+      if (!s.title) problems.push('عمل بلا عنوان.');
+      s.episodes.forEach(function (e) {
+        var k = String(Number(e.n));
+        if (seen[k]) problems.push('«' + s.title + '»: رقم الحلقة ' + k + ' مكرر.');
+        seen[k] = 1;
+        if (!e.sources.length) problems.push('«' + s.title + '» حلقة ' + k + ': بلا مصدر.');
+      });
+    });
+    return problems;
+  }
+  function jsonText() { return JSON.stringify(lib, null, 1); }
+  function exportFile() {
+    var p = validate();
+    var blob = new Blob([jsonText()], { type: 'application/json' });
+    var a = el('a', { href: URL.createObjectURL(blob), download: 'library.json' });
+    document.body.appendChild(a); a.click(); a.remove();
+    say(p.length ? 'تم التنزيل، لكن انتبه: ' + p.join(' ') : 'تم تنزيل library.json.', p.length > 0);
+  }
+  function copyJson() {
+    var t = jsonText();
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(t).then(function () { say('تم النسخ (' + t.length + ' حرف).'); }, function () { say('تعذّر النسخ، استخدم التنزيل.', true); });
+    } else say('المتصفح لا يسمح بالنسخ، استخدم التنزيل.', true);
+  }
+  function resetToPublished() {
+    if (!confirm('ستُمسح مسودتك وتبدأ من النسخة المنشورة. متأكد؟')) return;
+    store.remove('draft'); selShow = null; editEp = null;
+    I.loadPublished().then(function (l) { lib = I.normalize(l); save(); build(); say('تم.'); })
+     .catch(function () { lib = I.normalize({}); save(); build(); say('لا توجد نسخة منشورة، بدأت فارغة.'); });
+  }
+
+  /* ----- الأعمال ----- */
+  var showForm = { id: null };
+  function showsPanel() {
+    var f = {
+      title: el('input', { type: 'text', id: 'sTitle', maxlength: '120' }),
+      kind: el('select', { id: 'sKind' }, I.KIND_ORDER.map(function (k) { return el('option', { value: k, text: I.KIND_ONE[k] }); })),
+      status: el('select', { id: 'sStatus' }, el('option', { value: 'ongoing', text: 'مستمر' }), el('option', { value: 'complete', text: 'مكتمل' })),
+      desc: el('textarea', { id: 'sDesc', maxlength: '1000' }),
+      cover: el('input', { type: 'url', id: 'sCover', placeholder: 'https://… (اختياري)', dir: 'ltr' })
+    };
+    var editing = lib.shows.filter(function (s) { return s.id === showForm.id; })[0];
+    if (editing) { f.title.value = editing.title || ''; f.kind.value = editing.kind; f.status.value = editing.status; f.desc.value = editing.desc || ''; f.cover.value = editing.cover || ''; }
+
+    var list = el('ul', { class: 'list' }, lib.shows.map(function (s) {
+      return el('li', { class: s.id === selShow ? 'sel' : '' },
+        el('span', { text: s.title + ' · ' + I.KIND_ONE[s.kind] + ' · ' + s.episodes.length + ' حلقة' }),
+        el('span', { class: 'tools', style: 'margin:0' },
+          el('button', { class: 'btn', type: 'button', text: 'الحلقات', onclick: function () { selShow = s.id; editEp = null; build(); window.scrollTo(0, document.body.scrollHeight); } }),
+          el('button', { class: 'btn', type: 'button', text: 'تعديل', onclick: function () { showForm.id = s.id; build(); } }),
+          el('button', { class: 'btn danger', type: 'button', text: 'حذف', onclick: function () {
+            if (!confirm('حذف «' + s.title + '» وكل حلقاته؟')) return;
+            lib.shows = lib.shows.filter(function (x) { return x.id !== s.id; });
+            if (selShow === s.id) selShow = null; save(); build(); say('تم الحذف.');
+          } })));
+    }));
+
+    return el('section', { class: 'panel' },
+      el('h2', { text: editing ? 'تعديل عمل' : 'عمل جديد (القائمة الكبيرة: سلسلة أو برنامج أو بودكاست)' }),
+      el('label', { for: 'sTitle', text: 'اسم العمل (مثل اسم قائمة التشغيل)' }), f.title,
+      el('label', { for: 'sKind', text: 'النوع' }), f.kind,
+      el('label', { for: 'sStatus', text: 'الحالة' }), f.status,
+      el('label', { for: 'sDesc', text: 'وصف العمل كله' }), f.desc,
+      el('details', { class: 'help' },
+        el('summary', { text: 'خيارات إضافية: صورة غلاف مخصصة' }),
+        el('label', { for: 'sCover', text: 'رابط صورة الغلاف' }), f.cover,
+        el('p', { class: 'hint', text: 'الغلاف هو الصورة التي تظهر على بطاقة العمل في الصفحة الرئيسية. اتركه فارغاً فيظهر غلاف تلقائي بأول حرف من العنوان. لا تضع صورة إلا إن كنت تملكها أو مرخّصة، لأنها ستُعرض من موقعك.' })),
+      el('div', { class: 'tools' },
+        el('button', { class: 'btn primary', type: 'button', text: editing ? 'حفظ التعديل' : 'إضافة العمل', onclick: function () {
+          var title = f.title.value.trim();
+          if (!title) { say('اكتب عنوان العمل أولاً.', true); return; }
+          var cover = f.cover.value.trim();
+          if (cover && !I.isHttpUrl(cover)) { say('رابط الغلاف غير صالح.', true); return; }
+          var o = editing || { id: uid(), episodes: [] };
+          o.title = title; o.kind = f.kind.value; o.status = f.status.value; o.desc = f.desc.value.trim(); o.cover = cover || undefined;
+          if (!editing) lib.shows.push(o);
+          selShow = o.id; showForm.id = null; editEp = null; save(); build(); say('تم الحفظ. أضف الحلقات من الأسفل.');
+        } }),
+        editing ? el('button', { class: 'btn', type: 'button', text: 'إلغاء', onclick: function () { showForm.id = null; build(); } }) : null),
+      list);
+  }
+
+  /* ----- الحلقات ----- */
+  function epsPanel(s) {
+    var maxN = s.episodes.reduce(function (m, e) { return Math.max(m, Number(e.n) || 0); }, 0);
+    var e0 = editEp != null ? s.episodes.filter(function (e) { return Number(e.n) === Number(editEp); })[0] : null;
+    var f = {
+      n: el('input', { type: 'number', id: 'eN', min: '0', step: '1', inputmode: 'numeric' }),
+      title: el('input', { type: 'text', id: 'eT', maxlength: '160' }),
+      src1: el('input', { type: 'url', id: 'e1', dir: 'ltr', placeholder: 'رابط يوتيوب أو ساوند كلاود أو ملف صوتي' }),
+      src2: el('input', { type: 'url', id: 'e2', dir: 'ltr', placeholder: 'مصدر إضافي (اختياري)' }),
+      desc: el('textarea', { id: 'eD', maxlength: '600' })
+    };
+    var d1 = el('p', { class: 'det' }), d2 = el('p', { class: 'det' });
+    function detect(inp, out) {
+      var c = I.classify(inp.value);
+      out.className = 'det';
+      if (!inp.value.trim()) out.textContent = '';
+      else if (!c) { out.textContent = 'رابط غير مفهوم.'; out.className = 'det warn'; }
+      else out.textContent = 'تم التعرف: ' + I.sourceLabel(c) + (c.type === 'audio' ? ' (ملف أو رابط صوتي مباشر)' : '');
+    }
+    f.src1.addEventListener('input', function () { detect(f.src1, d1); });
+    f.src2.addEventListener('input', function () { detect(f.src2, d2); });
+
+    if (e0) {
+      f.n.value = e0.n; f.title.value = e0.title || ''; f.desc.value = e0.desc || '';
+      var src = e0.sources;
+      f.src1.value = src[0] ? (src[0].type === 'youtube' ? 'https://www.youtube.com/watch?v=' + src[0].id : src[0].url) : '';
+      f.src2.value = src[1] ? (src[1].type === 'youtube' ? 'https://www.youtube.com/watch?v=' + src[1].id : src[1].url) : '';
+      detect(f.src1, d1); detect(f.src2, d2);
+    } else f.n.value = String(maxN + 1);
+
+    function fetchTitle() {
+      var c = I.classify(f.src1.value);
+      if (!c || c.type !== 'youtube') { say('جلب العنوان يعمل مع روابط يوتيوب فقط.', true); return; }
+      say('جارٍ جلب العنوان…');
+      fetch('https://www.youtube.com/oembed?format=json&url=' + encodeURIComponent('https://www.youtube.com/watch?v=' + c.id))
+        .then(function (r) { if (!r.ok) throw 0; return r.json(); })
+        .then(function (j) { if (j && j.title) { f.title.value = j.title; say('تم جلب العنوان. راجعه قبل الحفظ.'); } else throw 0; })
+        .catch(function () { say('تعذّر جلب العنوان تلقائياً، اكتبه بنفسك.', true); });
+    }
+
+    var list = el('ul', { class: 'list' }, s.episodes.slice().sort(function (a, b) { return Number(a.n) - Number(b.n); }).map(function (e) {
+      return el('li', null,
+        el('span', { text: e.n + ' — ' + (e.title || 'بلا عنوان') + ' · ' + e.sources.map(I.sourceLabel).join('، ') }),
+        el('span', { class: 'tools', style: 'margin:0' },
+          el('button', { class: 'btn', type: 'button', text: 'تعديل', onclick: function () { editEp = e.n; build(); } }),
+          el('button', { class: 'btn danger', type: 'button', text: 'حذف', onclick: function () {
+            if (!confirm('حذف الحلقة ' + e.n + '؟')) return;
+            s.episodes = s.episodes.filter(function (x) { return x !== e; }); editEp = null; save(); build(); say('تم الحذف.');
+          } })));
+    }));
+
+    return el('section', { class: 'panel' },
+      el('h2', { text: 'حلقات: ' + s.title + ' (كل فيديو داخل هذا العمل)' }),
+      el('label', { for: 'eN', text: 'رقم الحلقة' }), f.n,
+      el('label', { for: 'e1', text: 'رابط الحلقة' }), f.src1, d1,
+      el('div', { class: 'tools' }, el('button', { class: 'btn', type: 'button', text: 'جلب العنوان من يوتيوب', onclick: fetchTitle })),
+      el('label', { for: 'e2', text: 'رابط ثانٍ للحلقة نفسها (اختياري)' }), f.src2, d2,
+      el('p', { class: 'hint', text: 'لو الحلقة متاحة بالشكلين ضع في الأول رابط الفيديو (يوتيوب) وفي الثاني رابط الصوت (ملف مباشر أو ساوند كلاود). لا تضع إلا مصادر رسمية أو مرخّصة، ولا ملف صوت مستخرجاً من يوتيوب.' }),
+      el('label', { for: 'eT', text: 'عنوان هذه الحلقة (الفيديو نفسه)' }), f.title,
+      el('label', { for: 'eD', text: 'وصف هذه الحلقة (اختياري، وتقدر تسيبه فاضي)' }), f.desc,
+      el('div', { class: 'tools' },
+        el('button', { class: 'btn primary', type: 'button', text: e0 ? 'حفظ التعديل' : 'إضافة الحلقة', onclick: function () {
+          var n = Number(f.n.value);
+          if (!isFinite(n) || f.n.value === '' || n < 0) { say('رقم الحلقة غير صالح.', true); return; }
+          var sources = [], bad = [];
+          [f.src1.value, f.src2.value].forEach(function (v) {
+            if (!v.trim()) return;
+            var c = I.classify(v); if (c) sources.push(c); else bad.push(v);
+          });
+          if (bad.length) { say('رابط غير مفهوم: ' + bad[0], true); return; }
+          if (!sources.length) { say('أضف مصدراً واحداً على الأقل.', true); return; }
+          var dup = s.episodes.filter(function (e) { return Number(e.n) === n && e !== e0; })[0];
+          if (dup) { say('رقم الحلقة ' + n + ' مستخدم بالفعل.', true); return; }
+          var o = e0 || {}; o.n = n; o.title = f.title.value.trim(); o.desc = f.desc.value.trim(); o.sources = sources; o.checkedAt = today();
+          if (!e0) s.episodes.push(o);
+          editEp = null; save(); build(); say('تم الحفظ في المسودة. نزّل library.json لما تخلص.');
+        } }),
+        e0 ? el('button', { class: 'btn', type: 'button', text: 'إلغاء', onclick: function () { editEp = null; build(); } }) : null),
+      list);
+  }
+
+  /* ---------- التحميل ---------- */
+  var draft = I.loadDraft();
+  if (draft) { lib = draft; build(); say('تم تحميل مسودتك المحفوظة في هذا المتصفح.'); }
+  else {
+    I.loadPublished().then(function (l) { lib = I.normalize(l); save(); build(); say('تم التحميل من المكتبة المنشورة.'); })
+     .catch(function () { lib = I.normalize({}); save(); build(); say('لم أجد library.json منشوراً، بدأت بمكتبة فارغة.'); });
+  }
+
+
+  window.addEventListener('beforeunload', function (ev) { if (dirty) { ev.preventDefault(); ev.returnValue = ''; } });
+})();
+</script>
+</body>
+</html>
