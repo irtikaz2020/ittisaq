@@ -1,0 +1,33 @@
+name: fetch-feeds
+
+on:
+  schedule:
+    # كل 3 ساعات. لتغييرها: '23 */6 * * *' تعني كل 6 ساعات.
+    - cron: '23 */3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fetch-feeds
+  cancel-in-progress: false
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: جلب الجديد
+        run: node fetch-feeds.mjs
+      - name: حفظ النتيجة
+        run: |
+          git config user.name "ittisaq-bot"
+          git config user.email "ittisaq-bot@users.noreply.github.com"
+          git add inbox.json
+          git diff --cached --quiet || (git commit -m "تحديث الوارد" && git push)
+          
