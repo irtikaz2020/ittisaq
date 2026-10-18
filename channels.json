@@ -1,1 +1,33 @@
-{ "version": 1, "channels": [] }
+{
+ "version": 1,
+ "channels": [
+  {
+   "k": "@elkaweer",
+   "cat": "other"
+  },
+  {
+   "k": "@MahmoudAboELRokab",
+   "cat": "other"
+  },
+  {
+   "k": "@3aidy",
+   "cat": "other"
+  },
+  {
+   "k": "@SulimanTv",
+   "cat": "other"
+  },
+  {
+   "k": "@yamenashour",
+   "cat": "other"
+  },
+  {
+   "k": "@halawaney",
+   "cat": "other"
+  },
+  {
+   "k": "@elmanchestrawy",
+   "cat": "other"
+  }
+ ]
+}
