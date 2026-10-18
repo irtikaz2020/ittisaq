@@ -208,15 +208,18 @@
       btnV.setAttribute('aria-disabled', String(!vSrc));
       btnA.setAttribute('aria-disabled', String(!aSrc));
       if (mode === 'video' && vSrc) {
+        var isList = vSrc.type === 'ytlist';
         area.appendChild(el('div', { class: 'frame' }, el('iframe', {
-          src: 'https://www.youtube.com/embed/' + encodeURIComponent(vSrc.id) + '?rel=0&playsinline=1',
+          src: isList
+            ? 'https://www.youtube.com/embed?listType=playlist&list=' + encodeURIComponent(vSrc.id) + '&playsinline=1'
+            : 'https://www.youtube.com/embed/' + encodeURIComponent(vSrc.id) + '?rel=0&playsinline=1',
           title: ep.title || 'مشغّل يوتيوب',
           allow: 'accelerometer; encrypted-media; gyroscope; picture-in-picture; fullscreen',
           allowfullscreen: true,
           referrerpolicy: 'strict-origin-when-cross-origin'
         })));
         area.appendChild(el('p', { class: 'official' }, 'المصدر الرسمي: ',
-          el('a', { href: 'https://www.youtube.com/watch?v=' + encodeURIComponent(vSrc.id), target: '_blank', rel: 'noopener noreferrer', text: 'فتح على يوتيوب' })));
+          el('a', { href: isList ? 'https://www.youtube.com/playlist?list=' + encodeURIComponent(vSrc.id) : 'https://www.youtube.com/watch?v=' + encodeURIComponent(vSrc.id), target: '_blank', rel: 'noopener noreferrer', text: 'فتح على يوتيوب' })));
       } else if (mode === 'audio' && aSrc) {
         if (aSrc.type === 'soundcloud') {
           area.appendChild(el('div', { class: 'audio-box' }, el('iframe', {

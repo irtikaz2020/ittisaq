@@ -41,6 +41,17 @@
     }
   }
 
+  /* رابط قائمة تشغيل يوتيوب (المعرّف الموثّق يبدأ بـ PL) */
+  function ytListId(input) {
+    try {
+      var u = new URL(String(input).trim());
+      var h = u.hostname.replace(/^www\./, '').replace(/^m\./, '');
+      if (h !== 'youtube.com') return null;
+      var l = u.searchParams.get('list');
+      return l && /^PL[\w-]{10,}$/.test(l) ? l : null;
+    } catch (e) { return null; }
+  }
+
   function isHttpUrl(s) {
     try { var u = new URL(String(s).trim()); return u.protocol === 'https:' || u.protocol === 'http:'; } catch (e) { return false; }
   }
@@ -49,7 +60,9 @@
   function classify(input) {
     if (!input) return null;
     input = String(input).trim();
+    var lid = ytListId(input);
     var id = ytId(input);
+    if (lid && (!id || /\/playlist/.test(input))) return { type: 'ytlist', id: lid };
     if (id) return { type: 'youtube', id: id };
     if (!isHttpUrl(input)) return null;
     var u = new URL(input);
@@ -59,9 +72,9 @@
   }
 
   function sourceLabel(s) {
-    return s.type === 'youtube' ? 'يوتيوب' : s.type === 'soundcloud' ? 'ساوند كلاود' : 'ملف صوتي';
+    return s.type === 'youtube' ? 'يوتيوب' : s.type === 'ytlist' ? 'قائمة تشغيل يوتيوب' : s.type === 'soundcloud' ? 'ساوند كلاود' : 'ملف صوتي';
   }
-  function isVideo(s) { return s.type === 'youtube'; }
+  function isVideo(s) { return s.type === 'youtube' || s.type === 'ytlist'; }
   function isAudio(s) { return s.type === 'audio' || s.type === 'soundcloud'; }
 
   function normalize(lib) {
@@ -136,7 +149,7 @@
 
   window.Ittisaq = {
     store: store, KINDS: KINDS, KIND_ONE: KIND_ONE, KIND_ORDER: KIND_ORDER,
-    ytId: ytId, classify: classify, isHttpUrl: isHttpUrl,
+    ytId: ytId, ytListId: ytListId, classify: classify, isHttpUrl: isHttpUrl,
     sourceLabel: sourceLabel, isVideo: isVideo, isAudio: isAudio,
     normalize: normalize, loadPublished: loadPublished, loadDraft: loadDraft,
     esc: esc, hash: hash, el: el
