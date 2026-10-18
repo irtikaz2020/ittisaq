@@ -301,11 +301,11 @@
     }));
 
     return el('section', { class: 'panel' },
-      el('h2', { text: editing ? 'تعديل عمل' : 'عمل جديد' }),
-      el('label', { for: 'sTitle', text: 'العنوان' }), f.title,
+      el('h2', { text: editing ? 'تعديل عمل' : 'عمل جديد (القائمة الكبيرة: سلسلة أو برنامج أو بودكاست)' }),
+      el('label', { for: 'sTitle', text: 'اسم العمل (مثل اسم قائمة التشغيل)' }), f.title,
       el('label', { for: 'sKind', text: 'النوع' }), f.kind,
       el('label', { for: 'sStatus', text: 'الحالة' }), f.status,
-      el('label', { for: 'sDesc', text: 'وصف قصير' }), f.desc,
+      el('label', { for: 'sDesc', text: 'وصف العمل كله' }), f.desc,
       el('details', { class: 'help' },
         el('summary', { text: 'خيارات إضافية: صورة غلاف مخصصة' }),
         el('label', { for: 'sCover', text: 'رابط صورة الغلاف' }), f.cover,
@@ -377,14 +377,14 @@
     }));
 
     return el('section', { class: 'panel' },
-      el('h2', { text: 'حلقات: ' + s.title }),
+      el('h2', { text: 'حلقات: ' + s.title + ' (كل فيديو داخل هذا العمل)' }),
       el('label', { for: 'eN', text: 'رقم الحلقة' }), f.n,
       el('label', { for: 'e1', text: 'رابط الحلقة' }), f.src1, d1,
       el('div', { class: 'tools' }, el('button', { class: 'btn', type: 'button', text: 'جلب العنوان من يوتيوب', onclick: fetchTitle })),
       el('label', { for: 'e2', text: 'رابط ثانٍ للحلقة نفسها (اختياري)' }), f.src2, d2,
       el('p', { class: 'hint', text: 'لو الحلقة متاحة بالشكلين ضع في الأول رابط الفيديو (يوتيوب) وفي الثاني رابط الصوت (ملف مباشر أو ساوند كلاود). لا تضع إلا مصادر رسمية أو مرخّصة، ولا ملف صوت مستخرجاً من يوتيوب.' }),
-      el('label', { for: 'eT', text: 'عنوان الحلقة' }), f.title,
-      el('label', { for: 'eD', text: 'وصف (اختياري)' }), f.desc,
+      el('label', { for: 'eT', text: 'عنوان هذه الحلقة (الفيديو نفسه)' }), f.title,
+      el('label', { for: 'eD', text: 'وصف هذه الحلقة (اختياري، وتقدر تسيبه فاضي)' }), f.desc,
       el('div', { class: 'tools' },
         el('button', { class: 'btn primary', type: 'button', text: e0 ? 'حفظ التعديل' : 'إضافة الحلقة', onclick: function () {
           var n = Number(f.n.value);
