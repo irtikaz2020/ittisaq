@@ -1,4 +1,26 @@
 {
  "version": 1,
- "shows": []
+ "shows": [
+  {
+   "id": "smvdjsamypc",
+   "episodes": [
+    {
+     "n": 1,
+     "title": "أزمة ديون فرنسا قد تعصف بكامل أوروبا",
+     "desc": "",
+     "sources": [
+      {
+       "type": "youtube",
+       "id": "5a93NxhqbDc"
+      }
+     ],
+     "checkedAt": "2026-10-18"
+    }
+   ],
+   "title": "فرنسا وأزمة الديون",
+   "kind": "ongoing",
+   "status": "ongoing",
+   "desc": "فرنسا ثاني أكبر اقتصاد في أوروبا تواجه أزمة ديون كبيرة قد تعصف بكامل أوروبا"
+  }
+ ]
 }
