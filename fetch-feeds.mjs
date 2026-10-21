@@ -62,7 +62,15 @@ async function resolveKey(key) {
   const html = await get(url);
   const m = html.match(/"(?:channelId|externalId)":"(UC[\w-]{22})"/) || html.match(/channel\/(UC[\w-]{22})/);
   if (!m) throw new Error('لم أجد معرّف القناة في الصفحة');
-  return { id: m[1] };
+  const h = html.match(/"canonicalBaseUrl":"\/(@[^"]+)"/);
+  return { id: m[1], handle: h ? decodeURIComponent(h[1]) : (/^@/.test(key) ? key : '') };
+}
+
+// يجلب الـhandle لقناة معروفة بمعرّفها فقط (من صفحتها)
+async function findHandle(id) {
+  const html = await get(`${BASE}/channel/${id}`);
+  const h = html.match(/"canonicalBaseUrl":"\/(@[^"]+)"/);
+  return h ? decodeURIComponent(h[1]) : '';
 }
 
 async function pool(list, n, fn) {
@@ -93,15 +101,24 @@ const ids = [...new Set(keys.map((k) => (UC.test(k) ? k : resolved[k]?.id)).filt
 await pool(ids, CONCURRENCY, async (id) => {
   try {
     const feed = parseFeed(await get(`${BASE}/feeds/videos.xml?channel_id=${id}`));
-    chmeta[id] = { name: feed.name, ok: now };
+    chmeta[id] = { name: feed.name, ok: now, handle: old.chmeta?.[id]?.handle || '' };
     for (const it of feed.items) {
       const prev = bucket.get(it.id);
       bucket.set(it.id, { id: it.id, ch: id, title: it.title, published: it.published, desc: it.desc, fetched: prev?.fetched || new Date(now).toISOString() });
     }
   } catch (e) {
-    chmeta[id] = { name: old.chmeta?.[id]?.name || '', err: String(e.message || e), at: now };
+    chmeta[id] = { name: old.chmeta?.[id]?.name || '', handle: old.chmeta?.[id]?.handle || '', err: String(e.message || e), at: now };
   }
 });
+
+// 2b) أسماء المستخدمين (@handle): من حلّ الروابط إن وُجد، وإلا بجلب صفحة القناة (حدّ أقصى لكل تشغيل كي لا نُكثر الطلبات)
+for (const k of Object.keys(resolved)) { const r = resolved[k]; if (r.handle && chmeta[r.id] && !chmeta[r.id].handle) chmeta[r.id].handle = r.handle; }
+const HANDLE_CAP = Number(process.env.HANDLE_CAP || 40);
+const needH = ids.filter((id) => chmeta[id] && !chmeta[id].handle && !chmeta[id].noHandle).slice(0, HANDLE_CAP);
+await pool(needH, CONCURRENCY, async (id) => {
+  try { const h = await findHandle(id); if (h) chmeta[id].handle = h; else chmeta[id].noHandle = 1; } catch (e) { /* يُعاد المحاولة في التشغيل القادم */ }
+});
+for (const id of ids) if (chmeta[id] && !chmeta[id].handle && old.chmeta?.[id]?.noHandle) chmeta[id].noHandle = 1;
 
 // 3) نظّف: أبقِ ما نُشر خلال المدة الأخيرة ولقنوات ما زالت في القائمة
 const idSet = new Set(ids);

@@ -22,7 +22,7 @@
 <script>
 (function () {
   'use strict';
-  var I = window.Ittisaq, el = I.el, store = I.store, CATS = I.CATS;
+  var I = window.Ittisaq, el = I.el, store = I.store, CATS = I.CATS.concat([{ id: 'none', name: 'بدون تصنيف' }]);
   var app = document.getElementById('app');
 
   /* ---------- حالة ---------- */
@@ -303,80 +303,146 @@
   }
 
   /* ---------- القنوات ---------- */
+  function csvFields(line) {
+    var out = [], cur = '', q = false;
+    for (var i = 0; i < line.length; i++) {
+      var ch = line[i];
+      if (q) { if (ch === '"') { if (line[i + 1] === '"') { cur += '"'; i++; } else q = false; } else cur += ch; }
+      else if (ch === '"') q = true;
+      else if (ch === ',') { out.push(cur); cur = ''; }
+      else cur += ch;
+    }
+    out.push(cur); return out;
+  }
   function parseLine(line) {
     line = line.trim(); if (!line) return null;
-    var name = '';
-    if (line.indexOf(',') > -1) {
-      var parts = line.split(','); name = (parts[parts.length - 1] || '').trim().replace(/^"|"$/g, '');
-      if (/^(https?:|UC[\w-]{22})/.test(name)) name = '';
+    var name = '', f = line.indexOf(',') > -1 ? csvFields(line) : [line];
+    if (f.length > 1) {
+      // ملف Takeout: المعرّف، الرابط، الاسم (الاسم هو الحقل الأخير غير الرابط)
+      var last = (f[f.length - 1] || '').trim();
+      if (!/^(https?:|UC[\w-]{22}$)/.test(last)) name = last;
     }
     var m = line.match(/UC[\w-]{22}/);
     if (m) return { k: m[0], name: name };
-    var h = line.match(/@[\w.\-]+/);
+    var h = line.match(/@[^\s/?,]+/);
     if (h) return { k: h[0], name: '' };
-    var u = line.match(/https?:\/\/(?:www\.|m\.)?youtube\.com\/(?:c|user)\/[^\s/?]+/);
+    var u = line.match(/https?:\/\/(?:www\.|m\.)?youtube\.com\/(?:c|user)\/[^\s/?,]+/);
     if (u) return { k: u[0], name: '' };
     return null;
   }
   function saveChans() { store.set('chans', chans); }
 
-  var chQ = '';
+  // يضيف نصاً (سطور) إلى التصنيف المختار ويعيد ملخصاً
+  function addFromText(text, cat) {
+    var have = {}; chans.channels.forEach(function (c) { have[c.k] = 1; });
+    var added = 0, dup = 0, bad = 0;
+    text.split(/\r?\n/).forEach(function (line) {
+      if (!line.trim()) return;
+      if (/^\s*(channel[ _]?id|"?channel)/i.test(line)) return; // سطر العناوين في ملف Takeout
+      var p = parseLine(line);
+      if (!p) { bad++; return; }
+      if (have[p.k]) { dup++; return; }
+      have[p.k] = 1; added++;
+      chans.channels.push({ k: p.k, cat: cat, name: p.name || undefined });
+    });
+    if (added) saveChans();
+    return { added: added, dup: dup, bad: bad };
+  }
+  function summary(r) {
+    return 'أُضيفت ' + r.added + ' قناة' + (r.dup ? '، ' + r.dup + ' مكررة' : '') + (r.bad ? '، ' + r.bad + ' سطر غير مفهوم' : '') + (r.added ? '. للتفعيل نزّل channels.json وارفعه (الإعدادات).' : '.');
+  }
+
+  var chQ = '', picked = {};
+  function chInfo(x) {
+    var id = keyToId(x.k), meta = id && inbox && inbox.chmeta && inbox.chmeta[id];
+    var name = (meta && meta.name) || x.name || '';
+    var handle = (meta && meta.handle) || (/^@/.test(x.k) ? x.k : '');
+    return { id: id, meta: meta, name: name, handle: handle };
+  }
   function chansView() {
     var box = el('div');
-    var addCat = el('select', { id: 'addCat' }, CATS.map(function (c) { return el('option', { value: c.id, text: c.name }); }));
-    addCat.value = store.get('addCat', 'din');
-    var ta = el('textarea', { id: 'addTa', dir: 'ltr', style: 'min-height:140px', placeholder: '@اسم_القناة\nhttps://www.youtube.com/@اسم\nhttps://www.youtube.com/channel/UC…\nأو سطور ملف اشتراكاتك من Google Takeout' });
+    var addCat = el('select', { id: 'addCat' }, CATS.map(function (c) { return el('option', { value: c.id, text: c.name + (c.id === 'none' ? ' (أفرزها لاحقاً)' : '') }); }));
+    addCat.value = store.get('addCat', 'none');
+    var ta = el('textarea', { id: 'addTa', dir: 'ltr', style: 'min-height:120px', placeholder: '@اسم_القناة\nhttps://www.youtube.com/@اسم\nhttps://www.youtube.com/channel/UC…' });
+    var csv = el('input', { type: 'file', accept: '.csv,text/csv,text/plain', class: 'sr', id: 'impCsv' });
+    csv.addEventListener('change', function () {
+      var f = csv.files[0]; if (!f) return;
+      var rd = new FileReader();
+      rd.onload = function () {
+        var r = addFromText(String(rd.result || ''), addCat.value);
+        store.set('addCat', addCat.value); csv.value = ''; render(); say(summary(r), !r.added);
+      };
+      rd.readAsText(f);
+    });
     box.appendChild(el('section', { class: 'panel' },
-      el('h2', { text: 'إضافة قنوات' }),
-      el('label', { for: 'addCat', text: 'التصنيف' }), addCat,
+      el('h2', { text: 'إضافة قنوات (' + chans.channels.length + ' قناة الآن)' }),
+      el('label', { for: 'addCat', text: 'ضعها في تصنيف' }), addCat,
+      el('p', { class: 'hint', text: 'لو عندك قنوات كثيرة مختلطة اختر «بدون تصنيف» ثم وزّعها بعد الرفع (تحديد عدة قنوات ونقلها دفعة واحدة، في الأسفل).' }),
+      el('h3', { style: 'font-size:1rem;margin:10px 0 4px', text: 'الطريقة 1: رفع ملف اشتراكاتك' }),
+      el('div', { class: 'tools' }, el('label', { class: 'btn primary', for: 'impCsv', text: 'اختيار ملف subscriptions.csv' }), csv),
+      el('p', { class: 'hint', text: 'الملف الذي نزّلته من Google Takeout (أو أي ملف نصي فيه روابط/معرّفات قنوات، سطر لكل قناة).' }),
+      el('h3', { style: 'font-size:1rem;margin:10px 0 4px', text: 'الطريقة 2: لصق قنوات' }),
       el('label', { for: 'addTa', text: 'ألصق قنوات، كل قناة في سطر' }), ta,
-      el('p', { class: 'hint', text: 'يقبل رابط القناة أو @handle أو معرّف UC…. وإن لصقت ملف subscriptions.csv من Takeout فالأسطر تُقرأ كما هي (المعرّف والاسم).' }),
       el('div', { class: 'tools' }, el('button', { class: 'btn primary', type: 'button', text: 'إضافة', onclick: function () {
-        var have = {}; chans.channels.forEach(function (c) { have[c.k] = 1; });
-        var added = 0, dup = 0, bad = 0;
-        ta.value.split(/\r?\n/).forEach(function (line) {
-          if (!line.trim()) return;
-          var p = parseLine(line);
-          if (!p) { bad++; return; }
-          if (have[p.k]) { dup++; return; }
-          have[p.k] = 1; added++;
-          chans.channels.push({ k: p.k, cat: addCat.value, name: p.name || undefined });
-        });
-        store.set('addCat', addCat.value);
-        if (added) saveChans();
-        ta.value = '';
-        render();
-        say('أُضيفت ' + added + ' قناة' + (dup ? '، ' + dup + ' مكررة' : '') + (bad ? '، ' + bad + ' سطر غير مفهوم' : '') + (added ? '. للتفعيل نزّل channels.json وارفعه (الإعدادات).' : '.'), !added);
+        var r = addFromText(ta.value, addCat.value);
+        store.set('addCat', addCat.value); ta.value = ''; render(); say(summary(r), !r.added);
       } }))));
 
-    var search = el('input', { type: 'text', placeholder: 'بحث في القنوات', 'aria-label': 'بحث في القنوات', value: chQ });
+    var search = el('input', { type: 'text', placeholder: 'ابحث باسم القناة أو @اسم المستخدم', 'aria-label': 'بحث في القنوات', value: chQ });
     search.addEventListener('change', function () { chQ = search.value.trim(); render(); });
     box.appendChild(el('div', { class: 'filters' }, el('div', { class: 'full' }, search)));
 
-    CATS.forEach(function (c) {
+    // شريط النقل الجماعي
+    var nPick = Object.keys(picked).length;
+    var bulkCat = el('select', { 'aria-label': 'نقل المحدد إلى' }, CATS.filter(function (c) { return c.id !== 'none'; }).map(function (c) { return el('option', { value: c.id, text: c.name }); }));
+    box.appendChild(el('section', { class: 'panel' },
+      el('h2', { text: 'نقل جماعي' + (nPick ? ' (' + nPick + ' محددة)' : '') }),
+      el('p', { class: 'hint', text: 'حدّد القنوات بالمربعات (أو «تحديد الظاهر» بعد البحث) ثم اختر التصنيف.' }),
+      bulkCat,
+      el('div', { class: 'tools' },
+        el('button', { class: 'btn primary', type: 'button', text: 'نقل المحدد', onclick: function () {
+          var n = 0; chans.channels.forEach(function (x) { if (picked[x.k]) { x.cat = bulkCat.value; n++; } });
+          if (!n) { say('لم تحدد شيئاً.', true); return; }
+          picked = {}; saveChans(); render(); say('نُقلت ' + n + ' قناة.');
+        } }),
+        el('button', { class: 'btn', type: 'button', text: 'إلغاء التحديد', onclick: function () { picked = {}; render(); } }))));
+
+    var order = [CATS[CATS.length - 1]].concat(CATS.slice(0, CATS.length - 1)); // «بدون تصنيف» أولاً
+    var q = chQ.toLowerCase();
+    order.forEach(function (c) {
       var list = chans.channels.filter(function (x) { return x.cat === c.id; });
-      if (chQ) list = list.filter(function (x) { var id = keyToId(x.k); return (chName(id || x.k, x.name || x.k) + ' ' + x.k).toLowerCase().indexOf(chQ.toLowerCase()) >= 0; });
+      if (q) list = list.filter(function (x) { var i = chInfo(x); return (i.name + ' ' + i.handle + ' ' + x.k).toLowerCase().indexOf(q) >= 0; });
       if (!list.length) return;
       var det = el('details', { class: 'help' }, el('summary', { text: c.name + ' (' + list.length + ')' }));
-      if (chQ) det.setAttribute('open', '');
+      if (q || (c.id === 'none')) det.setAttribute('open', '');
+      det.appendChild(el('div', { class: 'tools' }, el('button', { class: 'btn', type: 'button', text: 'تحديد الظاهر هنا', onclick: function () { list.forEach(function (x) { picked[x.k] = 1; }); render(); } })));
       list.forEach(function (x) {
-        var id = keyToId(x.k), meta = id && inbox && inbox.chmeta && inbox.chmeta[id];
-        var status = '';
-        if (!id) { var ur = inbox && inbox.unresolved && inbox.unresolved[x.k]; status = ur ? 'تعذّر حلّ المعرّف: ' + ur : 'بانتظار أول تحديث'; }
-        else if (meta && meta.err) status = 'فشل الجلب: ' + meta.err;
+        var i = chInfo(x), status = '';
+        if (!i.id) { var ur = inbox && inbox.unresolved && inbox.unresolved[x.k]; status = ur ? 'تعذّر حلّ المعرّف: ' + ur : 'بانتظار أول تحديث'; }
+        else if (i.meta && i.meta.err) status = 'فشل الجلب: ' + i.meta.err;
+        var cb = el('input', { type: 'checkbox', 'aria-label': 'تحديد', style: 'width:22px;height:22px;flex:none' });
+        cb.checked = !!picked[x.k];
+        cb.addEventListener('change', function () { if (cb.checked) picked[x.k] = 1; else delete picked[x.k]; render(); });
         var mv = el('select', { 'aria-label': 'نقل إلى تصنيف' }, CATS.map(function (cc) { return el('option', { value: cc.id, text: cc.name }); }));
         mv.value = x.cat;
         mv.addEventListener('change', function () { x.cat = mv.value; saveChans(); render(); say('تم النقل.'); });
         det.appendChild(el('div', { class: 'row-line' },
-          el('div', { style: 'flex:1;min-width:150px' }, el('div', { text: chName(id || x.k, x.name || x.k) }), el('div', { class: 'hint', dir: 'ltr', text: x.k }), status ? el('div', { class: 'err', text: status }) : null),
+          cb,
+          el('div', { style: 'flex:1;min-width:150px' },
+            el('div', { text: i.name || (i.handle ? i.handle : x.k) }),
+            i.handle ? el('div', { class: 'hint', dir: 'ltr', style: 'text-align:right', text: i.handle }) : (i.name ? el('div', { class: 'hint', text: 'اسم المستخدم يظهر بعد التحديث التالي' }) : null),
+            el('div', { class: 'hint', dir: 'ltr', style: 'text-align:right;opacity:.6;font-size:.75rem', text: x.k }),
+            status ? el('div', { class: 'err', text: status }) : null),
           mv,
           el('button', { class: 'btn danger', type: 'button', text: 'حذف', onclick: function () {
             if (!confirm('حذف هذه القناة من القائمة؟')) return;
+            delete picked[x.k];
             chans.channels = chans.channels.filter(function (y) { return y !== x; }); saveChans(); render();
           } })));
       });
       box.appendChild(det);
     });
+    if (!chans.channels.length) box.appendChild(el('p', { class: 'hint', text: 'لا توجد قنوات بعد.' }));
     return box;
   }
 
