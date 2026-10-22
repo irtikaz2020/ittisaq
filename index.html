@@ -1,0 +1,503 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>اتساق</title>
+<meta name="description" content="اتساق: مكان لمتابعة السلاسل والحلقات المستمرة والبودكاست بالترتيب، من مصادرها الرسمية.">
+<meta name="theme-color" content="#0e1828">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Readex+Pro:wght@300;400;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="#/" aria-label="اتساق، الصفحة الرئيسية"><span class="moon" aria-hidden="true"></span><b>اتساق</b></a>
+    <p class="tagline">ما يُتابَع بالترتيب، من مصادره الرسمية.</p>
+  </div>
+</header>
+
+<main><div class="wrap" id="app" aria-live="polite"></div></main>
+
+<footer>
+  <div class="wrap">
+    <nav aria-label="روابط">
+      <a href="standards.html">المعايير والخصوصية</a>
+      <a href="#/me">بياناتي على هذا الجهاز</a>
+      <a href="#/ask">اسأل وسيق</a>
+    </nav>
+    <button class="sig" id="sig" type="button" aria-label="وسيق"><span class="m" aria-hidden="true"></span><span>وسيق</span></button>
+    <p class="voice" id="voice" role="status"></p>
+  </div>
+</footer>
+
+<script src="common.js"></script>
+<script>
+(function () {
+  'use strict';
+  var I = window.Ittisaq, el = I.el, store = I.store;
+  var app = document.getElementById('app');
+  var lib = null;
+  var preview = /[?&]preview=1/.test(location.search);
+  var ILSAQ = 'https://irtikaz2020.github.io/ilsaq/index.html';   // عنوان إلصاق
+  var WASIQ = { lines: null, qa: [], contact: {} };                // يُحمَّل من wasiq.json (اختياري)
+
+  // موضع بدء التشغيل القادم من إلصاق (?t=ثواني) — يُستهلك مرة واحدة لحلقة واحدة
+  var pendingStart = (function () {
+    var m = location.search.match(/[?&]t=(\d+)/);
+    if (!m) return null;
+    try { history.replaceState(null, '', location.pathname + location.search.replace(/([?&])t=\d+&?/, '$1').replace(/[?&]$/, '') + location.hash); } catch (e) {}
+    return { t: Number(m[1]), hash: location.hash };
+  })();
+  function fmtTime(sec) {
+    sec = Math.max(0, Math.floor(sec)); var h = Math.floor(sec / 3600), m = Math.floor(sec % 3600 / 60), s = sec % 60;
+    var z = function (x) { return (x < 10 ? '0' : '') + x; };
+    return h ? h + ':' + z(m) + ':' + z(s) : m + ':' + z(s);
+  }
+
+  // واجهة مشغّل يوتيوب الرسمية (IFrame API): قراءة وقت التشغيل فقط، دون أي تعديل في المشغّل
+  var ytWaiters = null;
+  function loadYT(cb) {
+    if (window.YT && window.YT.Player) return cb();
+    if (!ytWaiters) {
+      ytWaiters = [];
+      var prev = window.onYouTubeIframeAPIReady;
+      window.onYouTubeIframeAPIReady = function () {
+        if (typeof prev === 'function') { try { prev(); } catch (e) {} }
+        var w = ytWaiters || []; ytWaiters = []; w.forEach(function (f) { try { f(); } catch (e) {} });
+      };
+      var sc = document.createElement('script'); sc.src = 'https://www.youtube.com/iframe_api'; sc.async = true;
+      sc.onerror = function () { ytWaiters = null; };
+      document.head.appendChild(sc);
+    }
+    ytWaiters.push(cb);
+  }
+
+  /* ---------- التحميل ---------- */
+  function start() {
+    var draft = preview ? I.loadDraft() : null;
+    var p = draft ? Promise.resolve(draft) : I.loadPublished();
+    p.then(function (l) { lib = I.normalize(l); route(); })
+     .catch(function () {
+       lib = I.normalize({});
+       route(true);
+     });
+  }
+
+  /* ---------- التقدم المحلي ---------- */
+  function progress() { return store.get('progress', {}); }
+  function saveProgress(p) { store.set('progress', p); }
+  function showProg(p, id) { return p[id] || (p[id] = { last: null, t: 0, seen: {}, audio: {} }); }
+
+  /* ---------- أدوات العرض ---------- */
+  function coverEl(s, cls) {
+    var h = I.hash(s.id || s.title) % 360;
+    var style = s.cover && I.isHttpUrl(s.cover)
+      ? 'background-image:url("' + encodeURI(s.cover).replace(/"/g, '%22') + '")'
+      : 'background:linear-gradient(145deg,hsl(' + h + ' 38% 26%),hsl(' + ((h + 35) % 360) + ' 42% 14%))';
+    return el('div', { class: 'cover' + (cls ? ' ' + cls : ''), style: style, 'aria-hidden': 'true' },
+      s.cover && I.isHttpUrl(s.cover) ? null : (s.title || '؟').trim().charAt(0));
+  }
+  function statusText(s) { return s.status === 'complete' ? 'مكتمل' : 'مستمر'; }
+  function epCount(s) { return s.episodes.length + ' حلقة'; }
+  function findShow(id) { return lib.shows.filter(function (s) { return s.id === id; })[0]; }
+  function sortedEps(s) { return s.episodes.slice().sort(function (a, b) { return Number(a.n) - Number(b.n); }); }
+
+  function showCard(s) {
+    return el('a', { class: 'card', href: '#/s/' + encodeURIComponent(s.id) },
+      coverEl(s),
+      el('div', { class: 'meta' },
+        el('h3', { text: s.title }),
+        el('div', { class: 'chips' },
+          el('span', { class: 'chip' + (s.status === 'complete' ? ' ok' : ''), text: statusText(s) }),
+          el('span', { class: 'chip', text: epCount(s) }))));
+  }
+
+  /* ---------- الرئيسية ---------- */
+  function home(failed) {
+    var frag = document.createDocumentFragment();
+    var shows = lib.shows.filter(function (s) { return s.episodes.length || true; });
+
+    if (!shows.length) {
+      frag.appendChild(el('div', { class: 'empty' },
+        el('p', { text: failed ? 'تعذّر تحميل المكتبة الآن.' : 'لا يوجد محتوى بعد.' })));
+      return frag;
+    }
+
+    /* كمّل من حيث وقفت */
+    var p = progress();
+    var resumes = shows.filter(function (s) { return p[s.id] && p[s.id].last != null && s.episodes.some(function (e) { return Number(e.n) === Number(p[s.id].last); }); })
+      .sort(function (a, b) { return p[b.id].t - p[a.id].t; }).slice(0, 6);
+    if (resumes.length) {
+      frag.appendChild(el('section', { class: 'shelf' },
+        el('h2', { text: 'كمّل من حيث وقفت' }),
+        el('div', { class: 'row' }, resumes.map(function (s) {
+          var sp = p[s.id], ep = s.episodes.filter(function (e) { return Number(e.n) === Number(sp.last); })[0];
+          var done = Object.keys(sp.seen || {}).filter(function (k) { return sp.seen[k]; }).length;
+          var pct = s.episodes.length ? Math.round(done * 100 / s.episodes.length) : 0;
+          return el('a', { class: 'resume', href: '#/s/' + encodeURIComponent(s.id) + '/' + ep.n },
+            el('small', { text: s.title }),
+            el('strong', { text: 'الحلقة ' + ep.n + (ep.title ? ' — ' + ep.title : '') }),
+            el('small', { text: done + ' من ' + s.episodes.length }),
+            el('div', { class: 'bar', role: 'progressbar', 'aria-valuenow': pct, 'aria-valuemin': 0, 'aria-valuemax': 100 }, el('i', { style: 'width:' + pct + '%' })));
+        }))));
+    }
+
+    /* رفوف حسب النوع */
+    I.KIND_ORDER.forEach(function (k) {
+      var list = shows.filter(function (s) { return s.kind === k; });
+      if (!list.length) return;
+      frag.appendChild(el('section', { class: 'shelf' },
+        el('h2', null, I.KINDS[k], el('small', { text: list.length })),
+        el('div', { class: 'row' }, list.map(showCard))));
+    });
+    return frag;
+  }
+
+  /* ---------- صفحة العمل ---------- */
+  var order = 'asc';
+  function showPage(id) {
+    var s = findShow(id);
+    if (!s) return notFound();
+    var p = progress(), sp = p[s.id] || { seen: {} };
+    var eps = sortedEps(s);
+    if (order === 'desc') eps.reverse();
+    document.title = s.title + ' — اتساق';
+
+    var root = document.createDocumentFragment();
+    root.appendChild(el('div', { class: 'crumb' }, el('a', { href: '#/', text: '← الرئيسية' })));
+    root.appendChild(el('div', { class: 'show-head' },
+      coverEl(s),
+      el('div', null,
+        el('h1', { text: s.title }),
+        el('div', { class: 'chips' },
+          el('span', { class: 'chip', text: I.KIND_ONE[s.kind] }),
+          el('span', { class: 'chip' + (s.status === 'complete' ? ' ok' : ''), text: statusText(s) }),
+          el('span', { class: 'chip', text: epCount(s) })),
+        s.desc ? el('p', { class: 'desc', text: s.desc }) : null)));
+
+    var sorted = sortedEps(s);
+    var tools = el('div', { class: 'tools' });
+    if (sp.last != null && s.episodes.some(function (e) { return Number(e.n) === Number(sp.last); })) {
+      tools.appendChild(el('a', { class: 'btn primary', href: '#/s/' + encodeURIComponent(s.id) + '/' + sp.last, text: 'كمّل من الحلقة ' + sp.last }));
+    } else if (sorted.length) {
+      tools.appendChild(el('a', { class: 'btn primary', href: '#/s/' + encodeURIComponent(s.id) + '/' + sorted[0].n, text: 'ابدأ من الحلقة ' + sorted[0].n }));
+    }
+    if (eps.length > 1) {
+      tools.appendChild(el('button', {
+        class: 'btn', type: 'button', 'aria-pressed': order === 'desc',
+        onclick: function () { order = order === 'asc' ? 'desc' : 'asc'; render(); },
+        text: order === 'asc' ? 'الأحدث أولاً' : 'الأقدم أولاً'
+      }));
+    }
+    root.appendChild(tools);
+
+    if (!eps.length) {
+      root.appendChild(el('div', { class: 'empty', text: 'لا توجد حلقات بعد.' }));
+      return root;
+    }
+    root.appendChild(el('ul', { class: 'eps' }, eps.map(function (e) {
+      var seen = sp.seen && sp.seen[e.n];
+      var v = e.sources.some(I.isVideo), a = e.sources.some(I.isAudio);
+      return el('li', null,
+        el('a', { class: 'ep' + (seen ? ' seen' : '') + (Number(sp.last) === Number(e.n) ? ' last' : ''), href: '#/s/' + encodeURIComponent(s.id) + '/' + e.n },
+          el('span', { class: 'n', text: seen ? '✓' : String(e.n) }),
+          el('span', { class: 't' }, e.title || ('الحلقة ' + e.n), e.desc ? el('small', { text: e.desc.slice(0, 90) }) : null),
+          el('span', { class: 'ic', text: (v ? '▶ فيديو' : '') + (v && a ? ' · ' : '') + (a ? '♪ صوت' : '') })));
+    })));
+    return root;
+  }
+
+  /* ---------- صفحة الحلقة ---------- */
+  function episodePage(id, n) {
+    var s = findShow(id);
+    if (!s) return notFound();
+    var sorted = sortedEps(s);
+    var idx = -1;
+    sorted.forEach(function (e, i) { if (Number(e.n) === Number(n)) idx = i; });
+    if (idx < 0) return notFound();
+    var ep = sorted[idx];
+    document.title = (ep.title || 'الحلقة ' + ep.n) + ' — ' + s.title;
+
+    var p = progress(), sp = showProg(p, s.id);
+    sp.last = ep.n; sp.t = Date.now(); saveProgress(p);
+
+    var vSrc = ep.sources.filter(I.isVideo)[0];
+    var aSrc = ep.sources.filter(I.isAudio)[0];
+    var mode = store.get('mode', 'video');
+    if (mode === 'video' && !vSrc && aSrc) mode = 'audio';
+    if (mode === 'audio' && !aSrc && vSrc) mode = 'video';
+
+    var area = el('div', { class: 'player' });
+    var note = el('p', { class: 'note', role: 'status' });
+    var getT = function () { return null; };   // يُستبدل بقارئ وقت المشغّل الحالي
+    var startAt = (pendingStart && pendingStart.hash === location.hash) ? pendingStart.t : null;
+    if (pendingStart && pendingStart.hash === location.hash) pendingStart = null;
+    var btnV = el('button', { class: 'btn', type: 'button' }, '▶ فيديو');
+    var btnA = el('button', { class: 'btn', type: 'button' }, '♪ صوت');
+
+    function paint() {
+      area.textContent = '';
+      getT = function () { return null; };
+      var tt = startAt; startAt = null;
+      if (tt != null) { note.className = 'note'; note.textContent = 'بدأ من ' + fmtTime(tt) + ' حيث دوّنت.'; }
+      btnV.setAttribute('aria-pressed', String(mode === 'video' && !!vSrc));
+      btnA.setAttribute('aria-pressed', String(mode === 'audio' && !!aSrc));
+      btnV.setAttribute('aria-disabled', String(!vSrc));
+      btnA.setAttribute('aria-disabled', String(!aSrc));
+      if (mode === 'video' && vSrc) {
+        var isList = vSrc.type === 'ytlist';
+        var ifr = el('iframe', {
+          src: isList
+            ? 'https://www.youtube.com/embed?listType=playlist&list=' + encodeURIComponent(vSrc.id) + '&playsinline=1'
+            : 'https://www.youtube.com/embed/' + encodeURIComponent(vSrc.id) + '?rel=0&playsinline=1&enablejsapi=1&origin=' + encodeURIComponent(location.origin) + (tt != null ? '&start=' + tt : ''),
+          title: ep.title || 'مشغّل يوتيوب',
+          allow: 'accelerometer; encrypted-media; gyroscope; picture-in-picture; fullscreen',
+          allowfullscreen: true,
+          referrerpolicy: 'strict-origin-when-cross-origin'
+        });
+        area.appendChild(el('div', { class: 'frame' }, ifr));
+        if (!isList) loadYT(function () {
+          try {
+            var pl = new window.YT.Player(ifr, { events: { onReady: function () {
+              getT = function () { try { var v = Math.floor(pl.getCurrentTime()); return v > 0 ? v : null; } catch (e) { return null; } };
+            } } });
+          } catch (e) {}
+        });
+        area.appendChild(el('p', { class: 'official' }, 'المصدر الرسمي: ',
+          el('a', { href: isList ? 'https://www.youtube.com/playlist?list=' + encodeURIComponent(vSrc.id) : 'https://www.youtube.com/watch?v=' + encodeURIComponent(vSrc.id), target: '_blank', rel: 'noopener noreferrer', text: 'فتح على يوتيوب' })));
+      } else if (mode === 'audio' && aSrc) {
+        if (aSrc.type === 'soundcloud') {
+          area.appendChild(el('div', { class: 'audio-box' }, el('iframe', {
+            src: 'https://w.soundcloud.com/player/?url=' + encodeURIComponent(aSrc.url) + '&visual=false',
+            title: ep.title || 'مشغّل ساوند كلاود', allow: 'encrypted-media', loading: 'lazy'
+          })));
+          area.appendChild(el('p', { class: 'official' }, 'المصدر الرسمي: ',
+            el('a', { href: aSrc.url, target: '_blank', rel: 'noopener noreferrer', text: 'فتح على ساوند كلاود' })));
+        } else {
+          var audio = el('audio', { controls: true, preload: 'none', src: aSrc.url });
+          var saved = Number((sp.audio || {})[ep.n] || 0), lastSave = 0;
+          audio.addEventListener('loadedmetadata', function () {
+            if (tt != null) { audio.currentTime = tt; return; }
+            if (saved > 5 && audio.duration && saved < audio.duration - 5) audio.currentTime = saved;
+          });
+          getT = function () { var v = Math.floor(audio.currentTime); return v > 0 ? v : null; };
+          audio.addEventListener('timeupdate', function () {
+            var now = Date.now();
+            if (now - lastSave < 4000) return;
+            lastSave = now;
+            var q = progress(), x = showProg(q, s.id);
+            x.audio = x.audio || {}; x.audio[ep.n] = Math.floor(audio.currentTime);
+            saveProgress(q);
+          });
+          audio.addEventListener('ended', function () {
+            var q = progress(), x = showProg(q, s.id);
+            x.seen[ep.n] = true; if (x.audio) delete x.audio[ep.n];
+            saveProgress(q); refreshSeen();
+          });
+          audio.addEventListener('error', function () {
+            note.className = 'note warn';
+            note.textContent = 'تعذّر تشغيل هذا المصدر الصوتي الآن.';
+          });
+          area.appendChild(el('div', { class: 'audio-box' }, audio));
+          area.appendChild(el('p', { class: 'official' }, 'المصدر الأصلي: ',
+            el('a', { href: aSrc.url, target: '_blank', rel: 'noopener noreferrer', text: 'فتح الرابط' })));
+        }
+      } else {
+        area.appendChild(el('div', { class: 'empty', text: 'لا يوجد مصدر متاح لهذه الحلقة حالياً.' }));
+      }
+    }
+
+    btnV.addEventListener('click', function () {
+      if (!vSrc) { note.className = 'note'; note.textContent = 'هذه الحلقة متاحة بالصوت فقط.'; return; }
+      note.textContent = ''; mode = 'video'; store.set('mode', 'video'); paint();
+    });
+    btnA.addEventListener('click', function () {
+      if (!aSrc) { note.className = 'note'; note.textContent = 'هذه الحلقة متاحة بالفيديو فقط.'; return; }
+      note.textContent = ''; mode = 'audio'; store.set('mode', 'audio'); paint();
+    });
+
+    var seenBtn = el('button', { class: 'btn', type: 'button' });
+    function refreshSeen() {
+      var q = progress(), x = q[s.id];
+      var on = !!(x && x.seen && x.seen[ep.n]);
+      seenBtn.setAttribute('aria-pressed', String(on));
+      seenBtn.textContent = on ? '✓ تمّت' : 'علّم كمنتهية';
+    }
+    seenBtn.addEventListener('click', function () {
+      var q = progress(), x = showProg(q, s.id);
+      x.seen[ep.n] = !x.seen[ep.n]; saveProgress(q); refreshSeen();
+    });
+    refreshSeen();
+    paint();
+
+    var prev = sorted[idx - 1], next = sorted[idx + 1];
+    var root = document.createDocumentFragment();
+    root.appendChild(el('div', { class: 'crumb' }, el('a', { href: '#/s/' + encodeURIComponent(s.id), text: '← ' + s.title })));
+    root.appendChild(el('h1', { text: (ep.n ? 'الحلقة ' + ep.n + (ep.title ? ' — ' + ep.title : '') : ep.title) }));
+    root.appendChild(el('div', { class: 'tools' }, btnV, btnA, seenBtn));
+    root.appendChild(note);
+    root.appendChild(area);
+    if (ep.desc) root.appendChild(el('p', { class: 'desc', text: ep.desc }));
+    root.appendChild(doors(s, ep, function () { return getT(); }));
+    root.appendChild(el('div', { class: 'nav2' },
+      prev ? el('a', { class: 'btn', href: '#/s/' + encodeURIComponent(s.id) + '/' + prev.n, text: 'السابقة →' }) : el('span'),
+      next ? el('a', { class: 'btn primary', href: '#/s/' + encodeURIComponent(s.id) + '/' + next.n, text: '← التالية' }) : el('span')));
+    return root;
+  }
+
+  /* ---------- تدوينة وتنوينة (تُكتب في إلصاق) ---------- */
+  var DOOR_INFO = {
+    tadwina: 'تدوينة: ما خطر لك أو أحسست به وأنت تشاهد أو تسمع. لها نوعان: لحظة وملاحظة. تُحفظ في إلصاق، لوحتك الخاصة.',
+    tanwina: 'تنوينة: ما قررته بعد أن سمعت: خطوة تفعلها، أو خطة من عدة خطوات. تُحفظ في إلصاق، لوحتك الخاصة.'
+  };
+  function ilsaqUrl(kind, s, ep, t) {
+    var link = location.origin + location.pathname + '#/s/' + encodeURIComponent(s.id) + '/' + ep.n;
+    var q = '?new=' + kind + '&link=' + encodeURIComponent(link) + '&title=' + encodeURIComponent(s.title + ' — ' + (ep.title || ('الحلقة ' + ep.n)));
+    if (t != null) q += '&t=' + t;
+    return ILSAQ + q;
+  }
+  function doors(s, ep, readT) {
+    function door(kind, name, verbs) {
+      var box = el('div', { class: 'info', hidden: true, text: DOOR_INFO[kind] });
+      var ib = el('button', { class: 'i', type: 'button', 'aria-expanded': 'false', 'aria-label': 'شرح: ' + name, text: 'i' });
+      ib.addEventListener('click', function () { var open = box.hidden; box.hidden = !open; ib.setAttribute('aria-expanded', String(open)); });
+      var links = verbs.map(function (v, i) {
+        var a = el('a', { class: 'btn' + (i === 0 ? ' primary' : ''), href: ilsaqUrl(kind, s, ep, null), target: '_blank', rel: 'noopener', text: v });
+        a.addEventListener('click', function () { a.href = ilsaqUrl(kind, s, ep, readT()); });   // وقت المشغّل لحظة الضغط
+        return a;
+      });
+      return el('section', { class: 'door' }, el('h2', null, name, ib), box, el('div', { class: 'verbs' }, links));
+    }
+    return el('div', { class: 'doors' }, door('tadwina', 'تدوينة', ['دوِّنها', 'لوِّنها']), door('tanwina', 'تنوينة', ['نوِّنها', 'عنوِنها']));
+  }
+
+  /* ---------- اسأل وسيق ---------- */
+  function norm(t) {
+    return String(t || '').toLowerCase().replace(/[\u064B-\u065F\u0670\u0640]/g, '').replace(/[أإآٱ]/g, 'ا').replace(/ى/g, 'ي').replace(/ة/g, 'ه').replace(/[^\u0621-\u063A\u0641-\u064Aa-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
+  }
+  function stem(w) { return w.replace(/^(ال|و|ب|ل|ف|ك)+(?=.{3,})/, '').replace(/(ات|ون|ين|ه|ها|ي)$/, function (m) { return w.length > 4 ? '' : m; }); }
+  function tokens(t) { return norm(t).split(' ').filter(function (w) { return w.length > 1; }).map(stem); }
+  function askPage() {
+    document.title = 'اسأل وسيق — اتساق';
+    var root = document.createDocumentFragment();
+    var out = el('div', { role: 'status', 'aria-live': 'polite' });
+    var inp = el('input', { type: 'search', placeholder: 'اكتب سؤالك', 'aria-label': 'سؤالك', class: 'ask-in' });
+    function contactBox() {
+      var c = WASIQ.contact || {}, links = [];
+      if (c.telegram) links.push(el('a', { class: 'btn', href: c.telegram, target: '_blank', rel: 'noopener', text: 'أرسل سؤالك على تيليجرام' }));
+      if (c.email) links.push(el('a', { class: 'btn', href: 'mailto:' + c.email + '?subject=' + encodeURIComponent('سؤال إلى وسيق'), text: 'أو بالبريد' }));
+      return el('div', { class: 'ask-more' }, el('p', { class: 'hint', text: 'لم تجد جواباً؟ يُرَدّ على ما يصل من الأسئلة، ويُضاف المفيد منها هنا.' }), el('div', { class: 'tools' }, links));
+    }
+    function run() {
+      out.textContent = '';
+      var q = tokens(inp.value);
+      if (!q.length) { out.appendChild(contactBox()); return; }
+      var scored = WASIQ.qa.map(function (x) {
+        var hay = tokens(x.q + ' ' + (x.k || '') + ' ' + x.a), set = {}; hay.forEach(function (w) { set[w] = 1; });
+        var sc = 0; q.forEach(function (w) { if (set[w]) sc += 1; else hay.forEach(function (h) { if (h.length > 3 && w.length > 3 && (h.indexOf(w) === 0 || w.indexOf(h) === 0)) sc += .5; }); });
+        return { x: x, sc: sc };
+      }).filter(function (r) { return r.sc > 0; }).sort(function (a, b) { return b.sc - a.sc; }).slice(0, 3);
+      if (!scored.length) out.appendChild(el('p', { class: 'note', text: 'لا جواب جاهز لهذا.' }));
+      scored.forEach(function (r) { out.appendChild(el('article', { class: 'qa' }, el('h3', { text: r.x.q }), el('p', { text: r.x.a }))); });
+      out.appendChild(contactBox());
+    }
+    inp.addEventListener('input', run);
+    root.appendChild(el('div', { class: 'crumb' }, el('a', { href: '#/', text: '← الرئيسية' })));
+    root.appendChild(el('h1', { text: 'اسأل وسيق' }));
+    root.appendChild(el('p', { class: 'hint', text: 'أجوبة مكتوبة سلفاً، تُبحث بكلماتك. وما لم يُجَب عنه يصل إلينا.' }));
+    root.appendChild(inp); root.appendChild(out);
+    if (!WASIQ.qa.length) out.appendChild(el('p', { class: 'note', text: 'لم تُحمَّل الأجوبة الآن.' })); else run();
+    return root;
+  }
+
+  /* ---------- بياناتي ---------- */
+  function mePage() {
+    document.title = 'بياناتي — اتساق';
+    var msg = el('p', { class: 'note', role: 'status' });
+    var file = el('input', { type: 'file', accept: 'application/json,.json', class: 'sr', id: 'imp' });
+    file.addEventListener('change', function () {
+      var f = file.files[0]; if (!f) return;
+      var r = new FileReader();
+      r.onload = function () {
+        try {
+          var d = JSON.parse(r.result);
+          if (!d || typeof d !== 'object' || d.app !== 'ittisaq') throw new Error('bad');
+          if (d.progress && typeof d.progress === 'object') saveProgress(d.progress);
+          if (d.mode === 'video' || d.mode === 'audio') store.set('mode', d.mode);
+          msg.className = 'note'; msg.textContent = 'تم استرجاع بياناتك.';
+        } catch (e) { msg.className = 'note warn'; msg.textContent = 'هذا الملف ليس نسخة احتياطية من اتساق.'; }
+      };
+      r.readAsText(f);
+    });
+    return el('div', { class: 'prose' },
+      el('div', { class: 'crumb' }, el('a', { href: '#/', text: '← الرئيسية' })),
+      el('h1', { text: 'بياناتي على هذا الجهاز' }),
+      el('p', { text: 'تقدّمك في الحلقات محفوظ في متصفحك أنت فقط، ولا يصل إلى أي خادم. لو غيّرت الهاتف أو مسحت بيانات المتصفح يضيع، لذلك يمكنك حفظ نسخة منه ثم استرجاعها.' }),
+      el('div', { class: 'tools' },
+        el('button', { class: 'btn primary', type: 'button', text: 'حفظ نسخة احتياطية', onclick: function () {
+          var blob = new Blob([JSON.stringify({ app: 'ittisaq', version: 1, mode: store.get('mode', 'video'), progress: progress() }, null, 1)], { type: 'application/json' });
+          var a = el('a', { href: URL.createObjectURL(blob), download: 'ittisaq-backup.json' });
+          document.body.appendChild(a); a.click(); a.remove();
+          msg.className = 'note'; msg.textContent = 'تم تجهيز الملف.';
+        } }),
+        el('label', { class: 'btn', for: 'imp', text: 'استرجاع نسخة' }),
+        file,
+        el('button', { class: 'btn danger', type: 'button', text: 'مسح تقدّمي', onclick: function () {
+          if (confirm('سيُمسح تقدّمك في كل الأعمال على هذا الجهاز. متأكد؟')) { store.remove('progress'); msg.className = 'note'; msg.textContent = 'تم المسح.'; }
+        } })),
+      msg);
+  }
+
+  function notFound() {
+    return el('div', { class: 'empty' }, el('p', { text: 'لم يُعثر على هذه الصفحة.' }), el('a', { href: '#/', text: 'الرئيسية' }));
+  }
+
+  /* ---------- التوجيه ---------- */
+  var lastFailed = false;
+  function route(failed) {
+    if (failed !== undefined) lastFailed = failed;
+    render();
+  }
+  function render() {
+    if (!lib) return;
+    var h = decodeURIComponent(location.hash.replace(/^#/, '')) || '/';
+    var m;
+    document.title = 'اتساق';
+    var view;
+    if ((m = h.match(/^\/s\/([^/]+)\/([^/]+)$/))) view = episodePage(m[1], m[2]);
+    else if ((m = h.match(/^\/s\/([^/]+)$/))) view = showPage(m[1]);
+    else if (h === '/me') view = mePage();
+    else if (h === '/ask') view = askPage();
+    else view = home(lastFailed);
+    app.textContent = '';
+    app.appendChild(view);
+    if (!render.keep) window.scrollTo(0, 0);
+  }
+  window.addEventListener('hashchange', function () { render.keep = false; render(); });
+
+  /* ---------- توقيع وسيق ---------- */
+  var LINES0 = [
+    'لكل حلقة موضعها.',
+    'أن تعرف أين وقفت، هذا هو التتابع.',
+    'القمر لا يكتمل في ليلة، لكنه يعود.',
+    'ما اتسق اجتمع، وما اجتمع بان.'
+  ];
+  var li = 0, voice = document.getElementById('voice');
+  document.getElementById('sig').addEventListener('click', function () {
+    var L = (WASIQ.lines && WASIQ.lines.length) ? WASIQ.lines : LINES0;
+    voice.textContent = L[li % L.length] + ' — وسيق';
+    li++;
+  });
+  // أجوبة وسيق وكلماته (ملف اختياري؛ إن غاب يعمل الموقع بالكلمات المدمجة)
+  fetch('wasiq.json', { cache: 'no-cache' }).then(function (r) { return r.ok ? r.json() : null; }).then(function (j) {
+    if (j) { WASIQ.lines = Array.isArray(j.lines) ? j.lines : null; WASIQ.qa = Array.isArray(j.qa) ? j.qa : []; WASIQ.contact = j.contact || {}; if (/^#\/ask$/.test(location.hash)) render(); }
+  }).catch(function () {});
+
+  start();
+})();
+</script>
+</body>
+</html>
