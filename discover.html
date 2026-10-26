@@ -335,21 +335,21 @@
   // يضيف نصاً (سطور) إلى التصنيف المختار ويعيد ملخصاً
   function addFromText(text, cat) {
     var have = {}; chans.channels.forEach(function (c) { have[c.k] = 1; });
-    var added = 0, dup = 0, bad = 0;
+    var added = 0, dup = 0, bad = 0, badLines = [];
     text.split(/\r?\n/).forEach(function (line) {
       if (!line.trim()) return;
       if (/^\s*(channel[ _]?id|"?channel)/i.test(line)) return; // سطر العناوين في ملف Takeout
       var p = parseLine(line);
-      if (!p) { bad++; return; }
+      if (!p) { bad++; badLines.push(line.trim().slice(0, 60)); return; }
       if (have[p.k]) { dup++; return; }
       have[p.k] = 1; added++;
       chans.channels.push({ k: p.k, cat: cat, name: p.name || undefined });
     });
     if (added) saveChans();
-    return { added: added, dup: dup, bad: bad };
+    return { added: added, dup: dup, bad: bad, badLines: badLines };
   }
   function summary(r) {
-    return 'أُضيفت ' + r.added + ' قناة' + (r.dup ? '، ' + r.dup + ' مكررة' : '') + (r.bad ? '، ' + r.bad + ' سطر غير مفهوم' : '') + (r.added ? '. للتفعيل نزّل channels.json وارفعه (الإعدادات).' : '.');
+    return 'أُضيفت ' + r.added + ' قناة' + (r.dup ? '، ' + r.dup + ' مكررة' : '') + (r.bad ? '، ' + r.bad + ' سطر غير مفهوم (' + r.badLines.slice(0, 5).join(' | ') + (r.bad > 5 ? ' …' : '') + ')' : '') + (r.added ? '. للتفعيل نزّل channels.json وارفعه (الإعدادات).' : '.');
   }
 
   var chQ = '', picked = {};
@@ -417,7 +417,7 @@
       if (q || (c.id === 'none')) det.setAttribute('open', '');
       det.appendChild(el('div', { class: 'tools' }, el('button', { class: 'btn', type: 'button', text: 'تحديد الظاهر هنا', onclick: function () { list.forEach(function (x) { picked[x.k] = 1; }); render(); } })));
       list.forEach(function (x) {
-        var i = chInfo(x), status = '';
+        var i = chInfo(x), status = '', rr = inbox && inbox.resolved && inbox.resolved[x.k], mism = !!(rr && rr.mismatch);
         if (!i.id) { var ur = inbox && inbox.unresolved && inbox.unresolved[x.k]; status = ur ? 'تعذّر حلّ المعرّف: ' + ur : 'بانتظار أول تحديث'; }
         else if (i.meta && i.meta.err) status = 'فشل الجلب: ' + i.meta.err;
         var cb = el('input', { type: 'checkbox', 'aria-label': 'تحديد', style: 'width:22px;height:22px;flex:none' });
@@ -431,7 +431,8 @@
           el('div', { style: 'flex:1;min-width:150px' },
             el('div', { text: i.name || (i.handle ? i.handle : x.k) }),
             i.handle ? el('div', { class: 'hint', dir: 'ltr', style: 'text-align:right', text: i.handle }) : (i.name ? el('div', { class: 'hint', text: 'اسم المستخدم يظهر بعد التحديث التالي' }) : null),
-            el('div', { class: 'hint', dir: 'ltr', style: 'text-align:right;opacity:.6;font-size:.75rem', text: x.k }),
+            (x.k.toLowerCase() !== (i.handle || '').toLowerCase() && !/^UC[\w-]{22}$/.test(x.k)) ? el('div', { class: 'hint', style: 'opacity:.7;font-size:.75rem' }, 'أنت كتبت: ', el('span', { dir: 'ltr', text: x.k })) : null,
+            mism ? el('div', { class: 'err' }, 'تنبيه: ما كتبته يختلف عن اسم القناة الفعلي. تأكد أنها القناة المقصودة ', el('a', { href: 'https://www.youtube.com/channel/' + i.id, target: '_blank', rel: 'noopener', text: 'افتحها' }), ' وإلا احذفها وأضفها برابطها.') : null,
             status ? el('div', { class: 'err', text: status }) : null),
           mv,
           el('button', { class: 'btn danger', type: 'button', text: 'حذف', onclick: function () {

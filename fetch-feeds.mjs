@@ -54,16 +54,39 @@ export function parseFeed(xml) {
 }
 
 // يحوّل مدخلاً مثل @handle أو رابط قناة إلى معرّف UC...
+// v2: نعتمد على بيانات الصفحة الخاصة بها (canonical / رابط RSS / itemprop) لا على أول معرّف يظهر في الصفحة
+const RV = 2;
+function pageChannelId(html) {
+  const pats = [
+    /<link[^>]+rel="canonical"[^>]+href="https?:\/\/www\.youtube\.com\/channel\/(UC[\w-]{22})"/,
+    /<link[^>]+href="https?:\/\/www\.youtube\.com\/feeds\/videos\.xml\?channel_id=(UC[\w-]{22})"/,
+    /<meta[^>]+itemprop="(?:channelId|identifier)"[^>]+content="(UC[\w-]{22})"/,
+    /"channelMetadataRenderer":\{[^}]*?"externalId":"(UC[\w-]{22})"/,
+    /"browseId":"(UC[\w-]{22})","canonicalBaseUrl":"\/@/
+  ];
+  for (const re of pats) { const m = html.match(re); if (m) return m[1]; }
+  return '';
+}
 async function resolveKey(key) {
-  if (UC.test(key)) return { id: key };
+  if (UC.test(key)) return { id: key, v: RV };
   let url = key;
   if (/^@/.test(key)) url = `${BASE}/${key}`;
   else if (!/^https?:/.test(key)) url = `${BASE}/@${key}`;
   const html = await get(url);
-  const m = html.match(/"(?:channelId|externalId)":"(UC[\w-]{22})"/) || html.match(/channel\/(UC[\w-]{22})/);
-  if (!m) throw new Error('لم أجد معرّف القناة في الصفحة');
+  let id = pageChannelId(html);
+  let loose = false;
+  if (!id) {
+    const m = html.match(/"(?:channelId|externalId)":"(UC[\w-]{22})"/) || html.match(/channel\/(UC[\w-]{22})/);
+    if (!m) throw new Error('لم أجد معرّف القناة في الصفحة');
+    id = m[1]; loose = true;
+  }
   const h = html.match(/"canonicalBaseUrl":"\/(@[^"]+)"/);
-  return { id: m[1], handle: h ? decodeURIComponent(h[1]) : (/^@/.test(key) ? key : '') };
+  const handle = h ? decodeURIComponent(h[1]) : '';
+  const typed = /^@/.test(key) ? key : (key.match(/youtube\.com\/(@[^/?#]+)/) || [])[1] || '';
+  const r = { id, handle, v: RV };
+  if (loose) r.loose = 1;
+  if (typed && handle && typed.toLowerCase() !== handle.toLowerCase()) r.mismatch = 1;
+  return r;
 }
 
 // يجلب الـhandle لقناة معروفة بمعرّفها فقط (من صفحتها)
@@ -91,7 +114,7 @@ const unresolved = {};
 
 // 1) حلّ المفاتيح
 const keys = [...new Set(channels.map((c) => c.k).filter(Boolean))];
-await pool(keys.filter((k) => !UC.test(k) && !resolved[k]), CONCURRENCY, async (k) => {
+await pool(keys.filter((k) => !UC.test(k) && (!resolved[k] || resolved[k].v !== RV)), CONCURRENCY, async (k) => {
   try { resolved[k] = await resolveKey(k); } catch (e) { unresolved[k] = String(e.message || e); }
 });
 for (const k of Object.keys(resolved)) if (!keys.includes(k)) delete resolved[k];
